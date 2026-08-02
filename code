@@ -29,16 +29,18 @@ local RunService = game:GetService("RunService")
 --==================================================
 
 local Theme = {
-    Background = Color3.fromRGB(24,24,24),
-    BackgroundTransparency = 0.10,
 
-    Accent = Color3.fromRGB(70,70,70),
+	Background = Color3.fromRGB(26,26,26),
+	Transparency = 0.12,
 
-    Text = Color3.new(1,1,1),
-    SecondaryText = Color3.fromRGB(185,185,185),
+	Stroke = Color3.fromRGB(75,75,75),
 
-    Red = Color3.fromRGB(221,28,28),
-    Green = Color3.fromRGB(0,255,98)
+	Text = Color3.fromRGB(255,255,255),
+	Secondary = Color3.fromRGB(180,180,180),
+
+	Green = Color3.fromRGB(0,255,98),
+	Red = Color3.fromRGB(221,28,28)
+
 }
 
 --==================================================
@@ -61,7 +63,7 @@ Main.Name = "Main"
 Main.Size = UDim2.fromOffset(255,165)
 Main.Position = UDim2.new(0.03,0,0.35,0)
 Main.BackgroundColor3 = Theme.Background
-Main.BackgroundTransparency = Theme.BackgroundTransparency
+Main.BackgroundTransparency = Theme.Transparency
 Main.BorderSizePixel = 0
 Main.Active = true
 Main.Parent = ScreenGui
@@ -71,7 +73,7 @@ Corner.CornerRadius = UDim.new(0,12)
 Corner.Parent = Main
 
 local Stroke = Instance.new("UIStroke")
-Stroke.Color = Theme.Accent
+Stroke.Color = Theme.Stroke
 Stroke.Thickness = 1
 Stroke.Transparency = 0.35
 Stroke.Parent = Main
@@ -87,7 +89,7 @@ Shadow.Position = UDim2.new(0.5,0,0.5,4)
 Shadow.Size = UDim2.new(1,32,1,32)
 Shadow.BackgroundTransparency = 1
 Shadow.Image = "rbxassetid://1316045217"
-Shadow.ImageTransparency = 0.55
+Shadow.ImageTransparency = 0.72
 Shadow.ScaleType = Enum.ScaleType.Slice
 Shadow.SliceCenter = Rect.new(10,10,118,118)
 Shadow.ZIndex = -1
@@ -130,8 +132,9 @@ GearButton.Size = UDim2.fromOffset(24,24)
 GearButton.Position = UDim2.new(1,-36,0,10)
 GearButton.BackgroundTransparency = 1
 GearButton.AutoButtonColor = false
-GearButton.Image = "rbxassetid://3926305904"
-GearButton.ImageRectOffset = Vector2.new(964,324)
+-- Temporary gear icon from Roblox sprite sheet
+GearButton.Image = "rbxassetid://3926307971"
+GearButton.ImageRectOffset = Vector2.new(324,124)
 GearButton.ImageRectSize = Vector2.new(36,36)
 GearButton.ImageColor3 = Theme.Text
 GearButton.Parent = Main
@@ -153,8 +156,7 @@ Tooltip.TextSize = 13
 Tooltip.TextColor3 = Theme.Text
 Tooltip.TextTransparency = 1
 Tooltip.Visible = false
-Tooltip.Parent = GearButton
-
+Tooltip.Parent = Main
 local TooltipCorner = Instance.new("UICorner")
 TooltipCorner.CornerRadius = UDim.new(0,6)
 TooltipCorner.Parent = Tooltip
@@ -277,7 +279,12 @@ local SettingsOpen = false
 local SettingsPanel = Instance.new("Frame")
 SettingsPanel.Name = "SettingsPanel"
 SettingsPanel.Size = UDim2.fromOffset(180,165)
-SettingsPanel.Position = UDim2.new(1,-10,0,0) -- Hidden
+SettingsPanel.Position = UDim2.new(
+	0,
+	Main.AbsoluteSize.X,
+	0,
+	0
+) -- Hidden
 SettingsPanel.BackgroundColor3 = Theme.Background
 SettingsPanel.BackgroundTransparency = Theme.BackgroundTransparency
 SettingsPanel.BorderSizePixel = 0
@@ -329,8 +336,15 @@ Divider2.Parent = SettingsPanel
 -- Open / Close Animation
 --==================================================
 
-local OpenPosition = UDim2.new(1,8,0,0)
-local ClosedPosition = UDim2.new(1,-10,0,0)
+local OpenPosition = UDim2.fromOffset(
+	Main.Size.X.Offset + 6,
+	0
+)
+
+local ClosedPosition = UDim2.fromOffset(
+	Main.Size.X.Offset,
+	0
+)
 
 local function ToggleSettings()
 
@@ -346,31 +360,26 @@ local function ToggleSettings()
 			}
 		):Play()
 
-		Tween(
-			GearButton,
-			0.25,
-			{
-				Rotation = 90
-			}
-		):Play()
+Tween(
+	GearButton,
+	0.2,
+	{
+		Rotation = SettingsOpen and 90 or 0
+	}
+):Play()
 
 	else
 
 		Tween(
-			SettingsPanel,
-			0.25,
-			{
-				Position = ClosedPosition
-			}
-		):Play()
-
-		Tween(
-			GearButton,
-			0.25,
-			{
-				Rotation = 0
-			}
-		):Play()
+	SettingsPanel,
+	0.30,
+	{
+		Position = UDim2.fromOffset(
+			Main.Size.X.Offset + 8,
+			0
+		)
+	}
+):Play()
 
 	end
 
