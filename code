@@ -512,3 +512,22 @@ local function CreateToggle(Text, Default, Callback)
 	return Toggles[Text]
 
 end
+--==================================================
+-- Settings
+--==================================================
+
+local DisplayPing = true
+local DisplayFPS = true
+local DisplayLB = game.PlaceId == 10449761463
+
+CreateToggle("Display Ping", true, function(Value)
+	DisplayPing = Value
+end)
+
+CreateToggle("Display FPS", true, function(Value)
+	DisplayFPS = Value
+end)
+
+CreateToggle("Display LB Stats", DisplayLB, function(Value)
+	DisplayLB = Value
+end)
