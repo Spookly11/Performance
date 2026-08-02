@@ -377,3 +377,138 @@ local function ToggleSettings()
 end
 
 GearButton.MouseButton1Click:Connect(ToggleSettings)
+--==================================================
+-- Toggle Creator
+--==================================================
+
+local Toggles = {}
+
+local function CreateToggle(Text, Default, Callback)
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1,0,0,28)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = SettingsPanel
+
+	local Label = Instance.new("TextLabel")
+	Label.BackgroundTransparency = 1
+	Label.Size = UDim2.new(1,-58,1,0)
+	Label.Font = Enum.Font.Gotham
+	Label.Text = Text
+	Label.TextSize = 14
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+
+	local Switch = Instance.new("TextButton")
+	Switch.AnchorPoint = Vector2.new(1,0.5)
+	Switch.Position = UDim2.new(1,0,0.5,0)
+	Switch.Size = UDim2.fromOffset(46,22)
+	Switch.Text = ""
+	Switch.AutoButtonColor = false
+	Switch.BorderSizePixel = 0
+	Switch.Parent = Holder
+
+	local SwitchCorner = Instance.new("UICorner")
+	SwitchCorner.CornerRadius = UDim.new(1,0)
+	SwitchCorner.Parent = Switch
+
+	local Knob = Instance.new("Frame")
+	Knob.Size = UDim2.fromOffset(18,18)
+	Knob.Position = UDim2.fromOffset(2,2)
+	Knob.BackgroundColor3 = Color3.new(1,1,1)
+	Knob.BorderSizePixel = 0
+	Knob.Parent = Switch
+
+	local KnobCorner = Instance.new("UICorner")
+	KnobCorner.CornerRadius = UDim.new(1,0)
+	KnobCorner.Parent = Knob
+
+	local Enabled = Default
+
+	local function Refresh(Animate)
+
+		local BGColor = Enabled and Theme.Green or Theme.Red
+		local KnobPos = Enabled
+			and UDim2.fromOffset(26,2)
+			or UDim2.fromOffset(2,2)
+
+		if Animate then
+
+			Tween(
+				Switch,
+				0.18,
+				{
+					BackgroundColor3 = BGColor
+				}
+			):Play()
+
+			Tween(
+				Knob,
+				0.18,
+				{
+					Position = KnobPos,
+					Size = UDim2.fromOffset(20,20)
+				}
+			):Play()
+
+			task.delay(0.18,function()
+
+				Tween(
+					Knob,
+					0.08,
+					{
+						Size = UDim2.fromOffset(18,18)
+					}
+				):Play()
+
+			end)
+
+		else
+
+			Switch.BackgroundColor3 = BGColor
+			Knob.Position = KnobPos
+
+		end
+
+	end
+
+	Refresh(false)
+
+	Switch.MouseButton1Click:Connect(function()
+
+		Enabled = not Enabled
+
+		Refresh(true)
+
+		if Callback then
+			Callback(Enabled)
+		end
+
+	end)
+
+	Toggles[Text] = {
+		Frame = Holder,
+		Label = Label,
+		Switch = Switch,
+		Knob = Knob,
+
+		Get = function()
+			return Enabled
+		end,
+
+		Set = function(Value)
+
+			Enabled = Value
+			Refresh(true)
+
+			if Callback then
+				Callback(Value)
+			end
+
+		end
+	}
+
+	return Toggles[Text]
+
+end
