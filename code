@@ -1,542 +1,688 @@
---// Performance UI
---// Part 1A (Lines 1-100)
+--[[
+    Ping / FPS / Kills HUD
+    ------------------------------------------------------------
+    ASSUMPTIONS (adjust if wrong, then tell me and I'll fix them):
+      1. "Monthly Kills" / "Total Kills" come from:
+             player.leaderstats["Monthly Kills"]
+             player.leaderstats["Total Kills"]
+         -> see getLeaderboardStats() below if this needs to change.
+      2. "game id" means game.PlaceId (not game.GameId / universe id).
+      3. FPS value of exactly 10 falls into the 11-20 bracket
+         (your ranges had a gap between "<10" and "11-20").
 
---==================================================
--- Duplicate Protection
---==================================================
+    Ping/FPS refresh live (~once per second). Kills refresh instantly
+    whenever the leaderstats values change. The countdown was removed.
+    The main box is draggable and the settings panel follows it.
+    ------------------------------------------------------------
+]]
 
-local GUI_NAME = "PerformanceUI"
-
-local Player = game:GetService("Players").LocalPlayer
-local PlayerGui = Player:WaitForChild("PlayerGui")
-
-local Existing = PlayerGui:FindFirstChild(GUI_NAME)
-
-if Existing then
-    Existing:Destroy()
-end
-
---==================================================
--- Services
---==================================================
-
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Stats = game:GetService("Stats")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
 
---==================================================
--- Theme
---==================================================
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-local Theme = {
+-- ============================================================
+-- CONFIG
+-- ============================================================
 
-	Background = Color3.fromRGB(26,26,26),
-	Transparency = 0.12,
+local ALLOWED_PLACE_ID = 10449761463
+local IS_ALLOWED_GAME = (game.PlaceId == ALLOWED_PLACE_ID)
 
-	Stroke = Color3.fromRGB(75,75,75),
-
-	Text = Color3.fromRGB(255,255,255),
-	Secondary = Color3.fromRGB(180,180,180),
-
-	Green = Color3.fromRGB(0,255,98),
-	Red = Color3.fromRGB(221,28,28)
-
+local COLORS = {
+    background   = Color3.fromRGB(13, 17, 40),
+    unloadRed    = Color3.fromHex and Color3.fromHex("#dd1c1c") or Color3.fromRGB(221, 28, 28),
+    disabledGray = Color3.fromRGB(140, 140, 140),
+    toggleOn     = Color3.fromRGB(70, 200, 130),
+    toggleOff    = Color3.fromRGB(200, 60, 60),
+    white        = Color3.fromRGB(255, 255, 255),
 }
 
---==================================================
--- GUI
---==================================================
+-- ============================================================
+-- STATE
+-- ============================================================
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = GUI_NAME
-ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent = PlayerGui
+local unloaded = false
 
---==================================================
--- Main Window
---==================================================
+local enabled = {
+    ping = true,
+    fps = true,
+    lbstats = IS_ALLOWED_GAME, -- auto-enabled only when in the right game
+}
 
-local Main = Instance.new("Frame")
-Main.Name = "Main"
-Main.Size = UDim2.fromOffset(255,165)
-Main.Position = UDim2.new(0.03,0,0.35,0)
-Main.BackgroundColor3 = Theme.Background
-Main.BackgroundTransparency = Theme.Transparency
-Main.BorderSizePixel = 0
-Main.Active = true
-Main.Parent = ScreenGui
+local lbLocked = not IS_ALLOWED_GAME -- when true, the LB Stats toggle can't be changed
+local dragLocked = false -- when true, the UI can't be dragged; set from saved prefs below
 
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0,12)
-Corner.Parent = Main
+local currentFPS = 60
+local fpsFrameCount = 0
+local fpsAccumTime = 0
 
-local Stroke = Instance.new("UIStroke")
-Stroke.Color = Theme.Stroke
-Stroke.Thickness = 1
-Stroke.Transparency = 0.35
-Stroke.Parent = Main
+-- ============================================================
+-- HELPERS: color lookups
+-- ============================================================
 
---==================================================
--- Shadow
---==================================================
-
-local Shadow = Instance.new("ImageLabel")
-Shadow.Name = "Shadow"
-Shadow.AnchorPoint = Vector2.new(0.5,0.5)
-Shadow.Position = UDim2.new(0.5,0,0.5,4)
-Shadow.Size = UDim2.new(1,32,1,32)
-Shadow.BackgroundTransparency = 1
-Shadow.Image = "rbxassetid://1316045217"
-Shadow.ImageTransparency = 0.72
-Shadow.ScaleType = Enum.ScaleType.Slice
-Shadow.SliceCenter = Rect.new(10,10,118,118)
-Shadow.ZIndex = -1
-Shadow.Parent = Main
-
---==================================================
--- Title
---==================================================
-
-local Title = Instance.new("TextLabel")
-Title.Name = "Title"
-Title.BackgroundTransparency = 1
-Title.Position = UDim2.fromOffset(16,10)
-Title.Size = UDim2.fromOffset(180,24)
-Title.Font = Enum.Font.GothamBold
-Title.Text = "Performance"
-Title.TextColor3 = Theme.Text
-Title.TextSize = 18
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Main
-
---==================================================
--- Divider
---==================================================
-
-local Divider = Instance.new("Frame")
-Divider.BorderSizePixel = 0
-Divider.BackgroundColor3 = Theme.Accent
-Divider.BackgroundTransparency = 0.55
-Divider.Position = UDim2.fromOffset(12,40)
-Divider.Size = UDim2.new(1,-24,0,1)
-Divider.Parent = Main
-  --==================================================
--- Gear Button
---==================================================
-
-local GearButton = Instance.new("ImageButton")
-GearButton.Name = "GearButton"
-GearButton.Size = UDim2.fromOffset(24,24)
-GearButton.Position = UDim2.new(1,-36,0,10)
-GearButton.BackgroundTransparency = 1
-GearButton.AutoButtonColor = false
--- Temporary gear icon from Roblox sprite sheet
-GearButton.Image = "rbxassetid://3926307971"
-GearButton.ImageRectOffset = Vector2.new(324,124)
-GearButton.ImageRectSize = Vector2.new(36,36)
-GearButton.ImageColor3 = Theme.Text
-GearButton.Parent = Main
-
---==================================================
--- Tooltip
---==================================================
-
-local Tooltip = Instance.new("TextLabel")
-Tooltip.Name = "Tooltip"
-Tooltip.AnchorPoint = Vector2.new(0.5,1)
-Tooltip.Position = UDim2.new(0.5,0,0,-6)
-Tooltip.Size = UDim2.fromOffset(72,24)
-Tooltip.BackgroundColor3 = Color3.fromRGB(35,35,35)
-Tooltip.BackgroundTransparency = 0.15
-Tooltip.Text = "Settings"
-Tooltip.Font = Enum.Font.Gotham
-Tooltip.TextSize = 13
-Tooltip.TextColor3 = Theme.Text
-Tooltip.TextTransparency = 1
-Tooltip.Visible = false
-Tooltip.Parent = Main
-local TooltipCorner = Instance.new("UICorner")
-TooltipCorner.CornerRadius = UDim.new(0,6)
-TooltipCorner.Parent = Tooltip
-
---==================================================
--- Tween Helper
---==================================================
-
-local function Tween(Object, Time, Properties, Style, Direction)
-	return TweenService:Create(
-		Object,
-		TweenInfo.new(
-			Time,
-			Style or Enum.EasingStyle.Quad,
-			Direction or Enum.EasingDirection.Out
-		),
-		Properties
-	)
+local function getPingColor(ping)
+    if ping >= 100 then return Color3.fromRGB(255, 0, 0)
+    elseif ping >= 85 then return Color3.fromRGB(255, 55, 0)
+    elseif ping >= 70 then return Color3.fromRGB(255, 132, 0)
+    elseif ping >= 50 then return Color3.fromRGB(255, 208, 0)
+    elseif ping >= 40 then return Color3.fromRGB(242, 255, 0)
+    elseif ping >= 30 then return Color3.fromRGB(166, 255, 0)
+    elseif ping >= 15 then return Color3.fromRGB(38, 255, 0)
+    else return Color3.fromRGB(0, 255, 98)
+    end
 end
 
---==================================================
--- Tooltip Animation
---==================================================
-
-GearButton.MouseEnter:Connect(function()
-
-	Tooltip.Visible = true
-
-	Tween(Tooltip,0.15,{
-		TextTransparency = 0
-	}):Play()
-
-	Tween(GearButton,0.15,{
-		Rotation = 15
-	}):Play()
-
-end)
-
-GearButton.MouseLeave:Connect(function()
-
-	local Fade = Tween(Tooltip,0.15,{
-		TextTransparency = 1
-	})
-
-	Fade:Play()
-
-	Fade.Completed:Once(function()
-		Tooltip.Visible = false
-	end)
-
-	Tween(GearButton,0.15,{
-		Rotation = 0
-	}):Play()
-
-end)
-
---==================================================
--- Dragging
---==================================================
-
-local Dragging = false
-local DragInput
-local DragStart
-local StartPosition
-
-local function UpdateDrag(Input)
-
-	local Delta = Input.Position - DragStart
-
-	Main.Position = UDim2.new(
-		StartPosition.X.Scale,
-		StartPosition.X.Offset + Delta.X,
-		StartPosition.Y.Scale,
-		StartPosition.Y.Offset + Delta.Y
-	)
-
+local function getFpsColor(fps)
+    if fps < 10 then return Color3.fromRGB(255, 0, 0)
+    elseif fps <= 20 then return Color3.fromRGB(255, 55, 0)
+    elseif fps <= 30 then return Color3.fromRGB(255, 132, 0)
+    elseif fps <= 45 then return Color3.fromRGB(255, 208, 0)
+    elseif fps <= 60 then return Color3.fromRGB(242, 255, 0)
+    elseif fps <= 80 then return Color3.fromRGB(166, 255, 0)
+    elseif fps <= 95 then return Color3.fromRGB(38, 255, 0)
+    else return Color3.fromRGB(0, 255, 98)
+    end
 end
 
-Main.InputBegan:Connect(function(Input)
+-- ============================================================
+-- HELPERS: data getters
+-- ============================================================
 
-	if Input.UserInputType == Enum.UserInputType.MouseButton1 then
-
-		Dragging = true
-		DragStart = Input.Position
-		StartPosition = Main.Position
-
-		Input.Changed:Connect(function()
-
-			if Input.UserInputState == Enum.UserInputState.End then
-				Dragging = false
-			end
-
-		end)
-
-	end
-
-end)
-
-Main.InputChanged:Connect(function(Input)
-
-	if Input.UserInputType == Enum.UserInputType.MouseMovement then
-		DragInput = Input
-	end
-
-end)
-
-UserInputService.InputChanged:Connect(function(Input)
-
-	if Dragging and Input == DragInput then
-		UpdateDrag(Input)
-	end
-
-end)
---==================================================
--- Settings Panel
---==================================================
-
-local SettingsOpen = false
-
-local SettingsPanel = Instance.new("Frame")
-SettingsPanel.Name = "SettingsPanel"
-SettingsPanel.Size = UDim2.fromOffset(180,165)
-SettingsPanel.Position = UDim2.new(
-	0,
-	Main.AbsoluteSize.X,
-	0,
-	0
-) -- Hidden
-SettingsPanel.BackgroundColor3 = Theme.Background
-SettingsPanel.BackgroundTransparency = Theme.BackgroundTransparency
-SettingsPanel.BorderSizePixel = 0
-SettingsPanel.ClipsDescendants = true
-SettingsPanel.Parent = Main
-
-local SettingsCorner = Instance.new("UICorner")
-SettingsCorner.CornerRadius = UDim.new(0,12)
-SettingsCorner.Parent = SettingsPanel
-
-local SettingsStroke = Instance.new("UIStroke")
-SettingsStroke.Color = Theme.Accent
-SettingsStroke.Thickness = 1
-SettingsStroke.Transparency = 0.35
-SettingsStroke.Parent = SettingsPanel
-
-local Padding = Instance.new("UIPadding")
-Padding.PaddingTop = UDim.new(0,12)
-Padding.PaddingLeft = UDim.new(0,12)
-Padding.PaddingRight = UDim.new(0,12)
-Padding.PaddingBottom = UDim.new(0,12)
-Padding.Parent = SettingsPanel
-
-local Layout = Instance.new("UIListLayout")
-Layout.Padding = UDim.new(0,8)
-Layout.FillDirection = Enum.FillDirection.Vertical
-Layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-Layout.SortOrder = Enum.SortOrder.LayoutOrder
-Layout.Parent = SettingsPanel
-
-local SettingsTitle = Instance.new("TextLabel")
-SettingsTitle.BackgroundTransparency = 1
-SettingsTitle.Size = UDim2.new(1,0,0,24)
-SettingsTitle.Font = Enum.Font.GothamBold
-SettingsTitle.Text = "Settings"
-SettingsTitle.TextSize = 17
-SettingsTitle.TextColor3 = Theme.Text
-SettingsTitle.TextXAlignment = Enum.TextXAlignment.Left
-SettingsTitle.Parent = SettingsPanel
-
-local Divider2 = Instance.new("Frame")
-Divider2.Size = UDim2.new(1,0,0,1)
-Divider2.BorderSizePixel = 0
-Divider2.BackgroundColor3 = Theme.Accent
-Divider2.BackgroundTransparency = 0.55
-Divider2.Parent = SettingsPanel
-
---==================================================
--- Open / Close Animation
---==================================================
-
-local OpenPosition = UDim2.fromOffset(
-	Main.Size.X.Offset + 6,
-	0
-)
-
-local ClosedPosition = UDim2.fromOffset(
-	Main.Size.X.Offset,
-	0
-)
-
-local function ToggleSettings()
-
-	SettingsOpen = not SettingsOpen
-
-	if SettingsOpen then
-
-		Tween(
-			SettingsPanel,
-			0.25,
-			{
-				Position = OpenPosition
-			}
-		):Play()
-
-Tween(
-	GearButton,
-	0.2,
-	{
-		Rotation = SettingsOpen and 90 or 0
-	}
-):Play()
-
-	else
-
-		Tween(
-	SettingsPanel,
-	0.30,
-	{
-		Position = UDim2.fromOffset(
-			Main.Size.X.Offset + 8,
-			0
-		)
-	}
-):Play()
-
-	end
-
+local function getPing()
+    local ok, result = pcall(function()
+        local networkStats = Stats.Network
+        local pingItem = networkStats.ServerStatsItem["Data Ping"]
+        return math.floor(pingItem:GetValue())
+    end)
+    if ok then return result end
+    return 0
 end
 
-GearButton.MouseButton1Click:Connect(ToggleSettings)
---==================================================
--- Toggle Creator
---==================================================
-
-local Toggles = {}
-
-local function CreateToggle(Text, Default, Callback)
-
-	local Holder = Instance.new("Frame")
-	Holder.Size = UDim2.new(1,0,0,28)
-	Holder.BackgroundTransparency = 1
-	Holder.Parent = SettingsPanel
-
-	local Label = Instance.new("TextLabel")
-	Label.BackgroundTransparency = 1
-	Label.Size = UDim2.new(1,-58,1,0)
-	Label.Font = Enum.Font.Gotham
-	Label.Text = Text
-	Label.TextSize = 14
-	Label.TextColor3 = Theme.Text
-	Label.TextXAlignment = Enum.TextXAlignment.Left
-	Label.Parent = Holder
-
-	local Switch = Instance.new("TextButton")
-	Switch.AnchorPoint = Vector2.new(1,0.5)
-	Switch.Position = UDim2.new(1,0,0.5,0)
-	Switch.Size = UDim2.fromOffset(46,22)
-	Switch.Text = ""
-	Switch.AutoButtonColor = false
-	Switch.BorderSizePixel = 0
-	Switch.Parent = Holder
-
-	local SwitchCorner = Instance.new("UICorner")
-	SwitchCorner.CornerRadius = UDim.new(1,0)
-	SwitchCorner.Parent = Switch
-
-	local Knob = Instance.new("Frame")
-	Knob.Size = UDim2.fromOffset(18,18)
-	Knob.Position = UDim2.fromOffset(2,2)
-	Knob.BackgroundColor3 = Color3.new(1,1,1)
-	Knob.BorderSizePixel = 0
-	Knob.Parent = Switch
-
-	local KnobCorner = Instance.new("UICorner")
-	KnobCorner.CornerRadius = UDim.new(1,0)
-	KnobCorner.Parent = Knob
-
-	local Enabled = Default
-
-	local function Refresh(Animate)
-
-		local BGColor = Enabled and Theme.Green or Theme.Red
-		local KnobPos = Enabled
-			and UDim2.fromOffset(26,2)
-			or UDim2.fromOffset(2,2)
-
-		if Animate then
-
-			Tween(
-				Switch,
-				0.18,
-				{
-					BackgroundColor3 = BGColor
-				}
-			):Play()
-
-			Tween(
-				Knob,
-				0.18,
-				{
-					Position = KnobPos,
-					Size = UDim2.fromOffset(20,20)
-				}
-			):Play()
-
-			task.delay(0.18,function()
-
-				Tween(
-					Knob,
-					0.08,
-					{
-						Size = UDim2.fromOffset(18,18)
-					}
-				):Play()
-
-			end)
-
-		else
-
-			Switch.BackgroundColor3 = BGColor
-			Knob.Position = KnobPos
-
-		end
-
-	end
-
-	Refresh(false)
-
-	Switch.MouseButton1Click:Connect(function()
-
-		Enabled = not Enabled
-
-		Refresh(true)
-
-		if Callback then
-			Callback(Enabled)
-		end
-
-	end)
-
-	Toggles[Text] = {
-		Frame = Holder,
-		Label = Label,
-		Switch = Switch,
-		Knob = Knob,
-
-		Get = function()
-			return Enabled
-		end,
-
-		Set = function(Value)
-
-			Enabled = Value
-			Refresh(true)
-
-			if Callback then
-				Callback(Value)
-			end
-
-		end
-	}
-
-	return Toggles[Text]
-
+-- Reads the rolling FPS average kept by the RenderStepped connection below.
+local function getFps()
+    return math.floor(currentFPS + 0.5)
 end
---==================================================
--- Settings
---==================================================
 
-local DisplayPing = true
-local DisplayFPS = true
-local DisplayLB = game.PlaceId == 10449761463
+-- "Monthly Kills" is displayed from the leaderstat named "Kills".
+local function getLeaderboardStats()
+    local monthly, total = nil, nil
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+    if leaderstats then
+        local m = leaderstats:FindFirstChild("Kills")
+        local t = leaderstats:FindFirstChild("Total Kills")
+        if m then monthly = m.Value end
+        if t then total = t.Value end
+    end
+    return monthly, total
+end
 
-CreateToggle("Display Ping", true, function(Value)
-	DisplayPing = Value
+-- ============================================================
+-- HELPERS: saved preferences (position + drag-lock, persists across executions)
+-- ============================================================
+-- Uses the executor's file functions (writefile/readfile/isfile). If your
+-- executor doesn't expose these, this just silently no-ops and the UI
+-- always opens at the default spot, unlocked.
+
+local PREFS_FILE = "PingFpsUI_Prefs.json"
+
+local function loadSavedPrefs()
+    local ok, result = pcall(function()
+        if isfile and readfile and isfile(PREFS_FILE) then
+            return HttpService:JSONDecode(readfile(PREFS_FILE))
+        end
+    end)
+    if ok and result then return result end
+    return nil
+end
+
+local function saveCurrentPrefs(pos, locked)
+    pcall(function()
+        if writefile then
+            writefile(PREFS_FILE, HttpService:JSONEncode({
+                x = pos.X.Offset,
+                y = pos.Y.Offset,
+                locked = locked,
+            }))
+        end
+    end)
+end
+
+local savedPrefs = loadSavedPrefs()
+dragLocked = savedPrefs and savedPrefs.locked or false
+
+-- ============================================================
+-- BUILD UI
+-- ============================================================
+
+-- Forward-declared so the toggle click handlers (created before these are
+-- defined) can call them the instant a switch is flipped.
+local updatePingDisplay, updateFpsDisplay, updateLbDisplay
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "PingFpsUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.Parent = PlayerGui
+
+-- ---------- MAIN FRAME ----------
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 340, 0, 150)
+mainFrame.Position = (savedPrefs and UDim2.new(0, savedPrefs.x, 0, savedPrefs.y)) or UDim2.new(0, 40, 0, 40)
+mainFrame.BackgroundColor3 = COLORS.background
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 18)
+mainCorner.Parent = mainFrame
+
+-- Ping label (static "Ping:")
+local pingStatic = Instance.new("TextLabel")
+pingStatic.Name = "PingStatic"
+pingStatic.BackgroundTransparency = 1
+pingStatic.Position = UDim2.new(0, 24, 0, 20)
+pingStatic.Size = UDim2.new(0, 60, 0, 30)
+pingStatic.Font = Enum.Font.GothamBold
+pingStatic.Text = "Ping:"
+pingStatic.TextColor3 = COLORS.white
+pingStatic.TextSize = 20
+pingStatic.TextXAlignment = Enum.TextXAlignment.Left
+pingStatic.Parent = mainFrame
+
+local pingValue = Instance.new("TextLabel")
+pingValue.Name = "PingValue"
+pingValue.BackgroundTransparency = 1
+pingValue.Position = UDim2.new(0, 84, 0, 20)
+pingValue.Size = UDim2.new(0, 80, 0, 30)
+pingValue.Font = Enum.Font.GothamBold
+pingValue.Text = "100"
+pingValue.TextColor3 = getPingColor(100)
+pingValue.TextSize = 20
+pingValue.TextXAlignment = Enum.TextXAlignment.Left
+pingValue.Parent = mainFrame
+
+-- FPS label
+local fpsStatic = Instance.new("TextLabel")
+fpsStatic.Name = "FpsStatic"
+fpsStatic.BackgroundTransparency = 1
+fpsStatic.Position = UDim2.new(0, 170, 0, 20)
+fpsStatic.Size = UDim2.new(0, 60, 0, 30)
+fpsStatic.Font = Enum.Font.GothamBold
+fpsStatic.Text = "FPS:"
+fpsStatic.TextColor3 = COLORS.white
+fpsStatic.TextSize = 20
+fpsStatic.TextXAlignment = Enum.TextXAlignment.Left
+fpsStatic.Parent = mainFrame
+
+local fpsValue = Instance.new("TextLabel")
+fpsValue.Name = "FpsValue"
+fpsValue.BackgroundTransparency = 1
+fpsValue.Position = UDim2.new(0, 222, 0, 20)
+fpsValue.Size = UDim2.new(0, 80, 0, 30)
+fpsValue.Font = Enum.Font.GothamBold
+fpsValue.Text = "100"
+fpsValue.TextColor3 = getFpsColor(100)
+fpsValue.TextSize = 20
+fpsValue.TextXAlignment = Enum.TextXAlignment.Left
+fpsValue.Parent = mainFrame
+
+-- Gear button
+local gearButton = Instance.new("ImageButton")
+gearButton.Name = "GearButton"
+gearButton.BackgroundTransparency = 1
+gearButton.Position = UDim2.new(0, 290, 0, 16)
+gearButton.Size = UDim2.new(0, 32, 0, 32)
+gearButton.Image = "rbxassetid://6031280882" -- standalone settings/gear icon
+gearButton.ImageColor3 = Color3.fromRGB(60, 140, 255)
+gearButton.Parent = mainFrame
+
+-- Gear tooltip ("Settings") - anchored so it's centered directly above the gear
+local tooltip = Instance.new("TextLabel")
+tooltip.Name = "Tooltip"
+tooltip.AnchorPoint = Vector2.new(0.5, 1)
+tooltip.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+tooltip.BackgroundTransparency = 0.2
+tooltip.Position = UDim2.new(0.5, 0, 0, -8)
+tooltip.Size = UDim2.new(0, 80, 0, 26)
+tooltip.Font = Enum.Font.Gotham
+tooltip.Text = "Settings"
+tooltip.TextColor3 = COLORS.white
+tooltip.TextSize = 14
+tooltip.Visible = false
+tooltip.ZIndex = 5
+tooltip.Parent = gearButton
+
+local tooltipCorner = Instance.new("UICorner")
+tooltipCorner.CornerRadius = UDim.new(0, 6)
+tooltipCorner.Parent = tooltip
+
+gearButton.MouseEnter:Connect(function()
+    tooltip.Visible = true
+end)
+gearButton.MouseLeave:Connect(function()
+    tooltip.Visible = false
 end)
 
-CreateToggle("Display FPS", true, function(Value)
-	DisplayFPS = Value
+-- Lock button (directly under the gear) - toggles whether the UI can be dragged.
+-- Built from plain Frames (body + ring + hollow) instead of an image asset,
+-- so there's no external asset ID to break.
+local lockButton = Instance.new("TextButton")
+lockButton.Name = "LockButton"
+lockButton.BackgroundTransparency = 1
+lockButton.Position = UDim2.new(0, 290, 0, 56)
+lockButton.Size = UDim2.new(0, 32, 0, 32)
+lockButton.Text = ""
+lockButton.Parent = mainFrame
+
+local lockColorOn = Color3.fromRGB(60, 140, 255)  -- unlocked (draggable)
+local lockColorOff = COLORS.toggleOff             -- locked (can't drag)
+
+-- Ring (shackle) - a rounded pill shape...
+local lockRing = Instance.new("Frame")
+lockRing.Name = "Ring"
+lockRing.AnchorPoint = Vector2.new(0.5, 1)
+lockRing.Position = UDim2.new(0.5, 0, 0, 20)
+lockRing.Size = UDim2.new(0, 14, 0, 14)
+lockRing.BackgroundColor3 = dragLocked and lockColorOff or lockColorOn
+lockRing.BorderSizePixel = 0
+lockRing.ZIndex = 1
+lockRing.Parent = lockButton
+
+local lockRingCorner = Instance.new("UICorner")
+lockRingCorner.CornerRadius = UDim.new(0.5, 0)
+lockRingCorner.Parent = lockRing
+
+-- ...with its middle hollowed out (colored to match the box behind it)
+-- so only a ring/arc remains, forming the shackle.
+local lockHole = Instance.new("Frame")
+lockHole.Name = "Hole"
+lockHole.AnchorPoint = Vector2.new(0.5, 1)
+lockHole.Position = UDim2.new(0.5, 0, 0, 18)
+lockHole.Size = UDim2.new(0, 7, 0, 9)
+lockHole.BackgroundColor3 = COLORS.background
+lockHole.BorderSizePixel = 0
+lockHole.ZIndex = 2
+lockHole.Parent = lockButton
+
+local lockHoleCorner = Instance.new("UICorner")
+lockHoleCorner.CornerRadius = UDim.new(0.5, 0)
+lockHoleCorner.Parent = lockHole
+
+-- Body - covers the bottom of the ring so it reads as a padlock shackle
+-- rising out of the lock body, not a full ring.
+local lockBody = Instance.new("Frame")
+lockBody.Name = "Body"
+lockBody.AnchorPoint = Vector2.new(0.5, 0)
+lockBody.Position = UDim2.new(0.5, 0, 0, 18)
+lockBody.Size = UDim2.new(0, 20, 0, 13)
+lockBody.BackgroundColor3 = dragLocked and lockColorOff or lockColorOn
+lockBody.BorderSizePixel = 0
+lockBody.ZIndex = 3
+lockBody.Parent = lockButton
+
+local lockBodyCorner = Instance.new("UICorner")
+lockBodyCorner.CornerRadius = UDim.new(0, 4)
+lockBodyCorner.Parent = lockBody
+
+local function refreshLockVisual()
+    local color = dragLocked and lockColorOff or lockColorOn
+    lockRing.BackgroundColor3 = color
+    lockBody.BackgroundColor3 = color
+end
+
+-- Lock tooltip - anchored so it's centered directly above the lock icon
+local lockTooltip = Instance.new("TextLabel")
+lockTooltip.Name = "Tooltip"
+lockTooltip.AnchorPoint = Vector2.new(0.5, 1)
+lockTooltip.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+lockTooltip.BackgroundTransparency = 0.2
+lockTooltip.Position = UDim2.new(0.5, 0, 0, -8)
+lockTooltip.Size = UDim2.new(0, 110, 0, 26)
+lockTooltip.Font = Enum.Font.Gotham
+lockTooltip.Text = "Lock Position"
+lockTooltip.TextColor3 = COLORS.white
+lockTooltip.TextSize = 14
+lockTooltip.Visible = false
+lockTooltip.ZIndex = 5
+lockTooltip.Parent = lockButton
+
+local lockTooltipCorner = Instance.new("UICorner")
+lockTooltipCorner.CornerRadius = UDim.new(0, 6)
+lockTooltipCorner.Parent = lockTooltip
+
+lockButton.MouseEnter:Connect(function()
+    lockTooltip.Visible = true
+end)
+lockButton.MouseLeave:Connect(function()
+    lockTooltip.Visible = false
 end)
 
-CreateToggle("Display LB Stats", DisplayLB, function(Value)
-	DisplayLB = Value
+lockButton.MouseButton1Click:Connect(function()
+    dragLocked = not dragLocked
+    refreshLockVisual()
+    saveCurrentPrefs(mainFrame.Position, dragLocked)
+end)
+
+-- Monthly Kills
+local monthlyLabel = Instance.new("TextLabel")
+monthlyLabel.Name = "MonthlyKills"
+monthlyLabel.BackgroundTransparency = 1
+monthlyLabel.Position = UDim2.new(0, 24, 0, 74)
+monthlyLabel.Size = UDim2.new(0, 300, 0, 26)
+monthlyLabel.Font = Enum.Font.Gotham
+monthlyLabel.Text = "Monthly Kills: 0"
+monthlyLabel.TextColor3 = COLORS.white
+monthlyLabel.TextSize = 18
+monthlyLabel.TextXAlignment = Enum.TextXAlignment.Left
+monthlyLabel.Parent = mainFrame
+
+-- Total Kills
+local totalLabel = Instance.new("TextLabel")
+totalLabel.Name = "TotalKills"
+totalLabel.BackgroundTransparency = 1
+totalLabel.Position = UDim2.new(0, 24, 0, 104)
+totalLabel.Size = UDim2.new(0, 300, 0, 26)
+totalLabel.Font = Enum.Font.Gotham
+totalLabel.Text = "Total Kills: 0"
+totalLabel.TextColor3 = COLORS.white
+totalLabel.TextSize = 18
+totalLabel.TextXAlignment = Enum.TextXAlignment.Left
+totalLabel.Parent = mainFrame
+
+-- ---------- SETTINGS PANEL (slides out) ----------
+
+local settingsContainer = Instance.new("Frame")
+settingsContainer.Name = "SettingsContainer"
+settingsContainer.BackgroundTransparency = 1
+settingsContainer.ClipsDescendants = true
+settingsContainer.Position = UDim2.new(0, 40 + 340 + 16, 0, 40)
+settingsContainer.Size = UDim2.new(0, 0, 0, 150) -- starts closed
+settingsContainer.Parent = screenGui
+
+local settingsPanel = Instance.new("Frame")
+settingsPanel.Name = "SettingsPanel"
+settingsPanel.BackgroundColor3 = COLORS.background
+settingsPanel.BorderSizePixel = 0
+settingsPanel.Size = UDim2.new(0, 260, 0, 150)
+settingsPanel.Position = UDim2.new(0, 0, 0, 0)
+settingsPanel.Parent = settingsContainer
+
+local settingsCorner = Instance.new("UICorner")
+settingsCorner.CornerRadius = UDim.new(0, 18)
+settingsCorner.Parent = settingsPanel
+
+-- generic toggle builder
+local toggles = {}
+
+local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle)
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 20, 0, yPos)
+    label.Size = UDim2.new(0, 150, 0, 30)
+    label.Font = Enum.Font.Gotham
+    label.Text = labelText
+    label.TextColor3 = COLORS.white
+    label.TextSize = 16
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = settingsPanel
+
+    local toggleFrame = Instance.new("Frame")
+    toggleFrame.Name = name .. "Toggle"
+    toggleFrame.Position = UDim2.new(0, 190, 0, yPos + 2)
+    toggleFrame.Size = UDim2.new(0, 50, 0, 26)
+    toggleFrame.BackgroundColor3 = enabled[stateKey] and COLORS.toggleOn or COLORS.toggleOff
+    toggleFrame.Parent = settingsPanel
+
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(1, 0)
+    toggleCorner.Parent = toggleFrame
+
+    local knob = Instance.new("Frame")
+    knob.Name = "Knob"
+    knob.Size = UDim2.new(0, 22, 0, 22)
+    knob.Position = enabled[stateKey] and UDim2.new(1, -24, 0, 2) or UDim2.new(0, 2, 0, 2)
+    knob.BackgroundColor3 = COLORS.white
+    knob.Parent = toggleFrame
+
+    local knobCorner = Instance.new("UICorner")
+    knobCorner.CornerRadius = UDim.new(1, 0)
+    knobCorner.Parent = knob
+
+    local button = Instance.new("TextButton")
+    button.BackgroundTransparency = 1
+    button.Size = UDim2.new(1, 0, 1, 0)
+    button.Text = ""
+    button.Parent = toggleFrame
+
+    local toggleObj = { Frame = toggleFrame, Knob = knob, Key = stateKey, Locked = locked }
+
+    local function refreshVisual()
+        local on = enabled[stateKey]
+        toggleFrame.BackgroundColor3 = on and COLORS.toggleOn or COLORS.toggleOff
+        TweenService:Create(knob, TweenInfo.new(0.15), {
+            Position = on and UDim2.new(1, -24, 0, 2) or UDim2.new(0, 2, 0, 2)
+        }):Play()
+    end
+
+    toggleObj.Refresh = refreshVisual
+
+    button.MouseButton1Click:Connect(function()
+        if toggleObj.Locked then return end
+        enabled[stateKey] = not enabled[stateKey]
+        refreshVisual()
+        if onToggle then onToggle() end
+    end)
+
+    toggles[stateKey] = toggleObj
+    return toggleObj
+end
+
+createToggleRow("Ping", 14, "Display Ping", "ping", false, function() updatePingDisplay() end)
+createToggleRow("Fps", 50, "Display FPS", "fps", false, function() updateFpsDisplay() end)
+local lbToggle = createToggleRow("LbStats", 86, "Display LB Stats", "lbstats", lbLocked, function() updateLbDisplay() end)
+
+-- Unload button
+local unloadButton = Instance.new("TextButton")
+unloadButton.Name = "UnloadButton"
+unloadButton.Position = UDim2.new(0, 20, 0, 116)
+unloadButton.Size = UDim2.new(0, 220, 0, 28)
+unloadButton.BackgroundColor3 = COLORS.unloadRed
+unloadButton.Font = Enum.Font.GothamBold
+unloadButton.Text = "UNLOAD SCRIPT"
+unloadButton.TextColor3 = Color3.fromRGB(20, 0, 0)
+unloadButton.TextSize = 16
+unloadButton.Parent = settingsPanel
+
+local unloadCorner = Instance.new("UICorner")
+unloadCorner.CornerRadius = UDim.new(0, 10)
+unloadCorner.Parent = unloadButton
+
+-- ============================================================
+-- SETTINGS PANEL OPEN/CLOSE
+-- ============================================================
+
+local settingsOpen = false
+
+gearButton.MouseButton1Click:Connect(function()
+    settingsOpen = not settingsOpen
+    local targetSize = settingsOpen and UDim2.new(0, 260, 0, 150) or UDim2.new(0, 0, 0, 150)
+    TweenService:Create(settingsContainer, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = targetSize
+    }):Play()
+end)
+
+-- ============================================================
+-- LIVE PING / FPS DISPLAY
+-- ============================================================
+
+function updatePingDisplay()
+    if enabled.ping then
+        local ping = getPing()
+        pingValue.Text = tostring(ping)
+        pingValue.TextColor3 = getPingColor(ping)
+    else
+        pingValue.Text = "Disabled"
+        pingValue.TextColor3 = COLORS.disabledGray
+    end
+end
+
+function updateFpsDisplay()
+    if enabled.fps then
+        local fps = getFps()
+        fpsValue.Text = tostring(fps)
+        fpsValue.TextColor3 = getFpsColor(fps)
+    else
+        fpsValue.Text = "Disabled"
+        fpsValue.TextColor3 = COLORS.disabledGray
+    end
+end
+
+-- Recomputes currentFPS every ~1s (a 1-frame FPS number jitters too much to
+-- be readable), then immediately reflects both ping and fps to the UI.
+-- Ping itself is looked up fresh every time too, so both are "live".
+local renderConn
+renderConn = RunService.RenderStepped:Connect(function(dt)
+    fpsFrameCount += 1
+    fpsAccumTime += dt
+    if fpsAccumTime >= 1 then
+        currentFPS = fpsFrameCount / fpsAccumTime
+        fpsFrameCount = 0
+        fpsAccumTime = 0
+        updateFpsDisplay()
+        updatePingDisplay()
+    end
+end)
+
+updatePingDisplay()
+updateFpsDisplay()
+
+-- ============================================================
+-- LIVE LEADERBOARD (MONTHLY / TOTAL KILLS) DISPLAY
+-- ============================================================
+
+local lbConnections = {}
+
+function updateLbDisplay()
+    if lbLocked then
+        enabled.lbstats = false
+    end
+
+    if enabled.lbstats then
+        local monthly, total = getLeaderboardStats()
+        monthlyLabel.Text = "Monthly Kills: " .. tostring(monthly or "N/A")
+        totalLabel.Text = "Total Kills: " .. tostring(total or "N/A")
+        monthlyLabel.TextColor3 = COLORS.white
+        totalLabel.TextColor3 = COLORS.white
+    else
+        monthlyLabel.Text = "Monthly Kills: Disabled"
+        totalLabel.Text = "Total Kills: Disabled"
+        monthlyLabel.TextColor3 = COLORS.disabledGray
+        totalLabel.TextColor3 = COLORS.disabledGray
+    end
+
+    if lbToggle then
+        lbToggle.Refresh()
+    end
+end
+
+-- Hooks .Changed on the leaderstats values so kills update the instant the
+-- server changes them, instead of on a timer. Falls back to just showing
+-- whatever's there if leaderstats hasn't loaded in yet.
+local function hookLeaderboardLiveUpdates()
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+    if not leaderstats then
+        leaderstats = LocalPlayer:WaitForChild("leaderstats", 10)
+    end
+    if not leaderstats then return end
+
+    local monthlyStat = leaderstats:FindFirstChild("Kills")
+    local totalStat = leaderstats:FindFirstChild("Total Kills")
+
+    if monthlyStat then
+        table.insert(lbConnections, monthlyStat.Changed:Connect(updateLbDisplay))
+    end
+    if totalStat then
+        table.insert(lbConnections, totalStat.Changed:Connect(updateLbDisplay))
+    end
+end
+
+updateLbDisplay()
+task.spawn(hookLeaderboardLiveUpdates)
+
+-- ============================================================
+-- DRAGGING
+-- ============================================================
+
+local dragging = false
+local dragInput
+local dragStart
+local startPos
+
+-- Keeps the settings panel glued to the right edge of the main box
+-- as it gets dragged around.
+local function updateSettingsContainerPosition()
+    settingsContainer.Position = UDim2.new(
+        0, mainFrame.Position.X.Offset + mainFrame.Size.X.Offset + 16,
+        0, mainFrame.Position.Y.Offset
+    )
+end
+
+mainFrame.Active = true
+mainFrame.InputBegan:Connect(function(input)
+    if dragLocked then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+                saveCurrentPrefs(mainFrame.Position, dragLocked)
+            end
+        end)
+    end
+end)
+
+mainFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+        updateSettingsContainerPosition()
+    end
+end)
+
+-- Places the settings panel correctly on first load, in case the main box
+-- was restored to a saved (non-default) position above.
+updateSettingsContainerPosition()
+
+-- ============================================================
+-- UNLOAD
+-- ============================================================
+
+unloadButton.MouseButton1Click:Connect(function()
+    unloaded = true
+    if renderConn then
+        renderConn:Disconnect()
+    end
+    for _, conn in ipairs(lbConnections) do
+        conn:Disconnect()
+    end
+    screenGui:Destroy()
 end)
