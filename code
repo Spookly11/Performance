@@ -268,3 +268,112 @@ UserInputService.InputChanged:Connect(function(Input)
 	end
 
 end)
+--==================================================
+-- Settings Panel
+--==================================================
+
+local SettingsOpen = false
+
+local SettingsPanel = Instance.new("Frame")
+SettingsPanel.Name = "SettingsPanel"
+SettingsPanel.Size = UDim2.fromOffset(180,165)
+SettingsPanel.Position = UDim2.new(1,-10,0,0) -- Hidden
+SettingsPanel.BackgroundColor3 = Theme.Background
+SettingsPanel.BackgroundTransparency = Theme.BackgroundTransparency
+SettingsPanel.BorderSizePixel = 0
+SettingsPanel.ClipsDescendants = true
+SettingsPanel.Parent = Main
+
+local SettingsCorner = Instance.new("UICorner")
+SettingsCorner.CornerRadius = UDim.new(0,12)
+SettingsCorner.Parent = SettingsPanel
+
+local SettingsStroke = Instance.new("UIStroke")
+SettingsStroke.Color = Theme.Accent
+SettingsStroke.Thickness = 1
+SettingsStroke.Transparency = 0.35
+SettingsStroke.Parent = SettingsPanel
+
+local Padding = Instance.new("UIPadding")
+Padding.PaddingTop = UDim.new(0,12)
+Padding.PaddingLeft = UDim.new(0,12)
+Padding.PaddingRight = UDim.new(0,12)
+Padding.PaddingBottom = UDim.new(0,12)
+Padding.Parent = SettingsPanel
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0,8)
+Layout.FillDirection = Enum.FillDirection.Vertical
+Layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Parent = SettingsPanel
+
+local SettingsTitle = Instance.new("TextLabel")
+SettingsTitle.BackgroundTransparency = 1
+SettingsTitle.Size = UDim2.new(1,0,0,24)
+SettingsTitle.Font = Enum.Font.GothamBold
+SettingsTitle.Text = "Settings"
+SettingsTitle.TextSize = 17
+SettingsTitle.TextColor3 = Theme.Text
+SettingsTitle.TextXAlignment = Enum.TextXAlignment.Left
+SettingsTitle.Parent = SettingsPanel
+
+local Divider2 = Instance.new("Frame")
+Divider2.Size = UDim2.new(1,0,0,1)
+Divider2.BorderSizePixel = 0
+Divider2.BackgroundColor3 = Theme.Accent
+Divider2.BackgroundTransparency = 0.55
+Divider2.Parent = SettingsPanel
+
+--==================================================
+-- Open / Close Animation
+--==================================================
+
+local OpenPosition = UDim2.new(1,8,0,0)
+local ClosedPosition = UDim2.new(1,-10,0,0)
+
+local function ToggleSettings()
+
+	SettingsOpen = not SettingsOpen
+
+	if SettingsOpen then
+
+		Tween(
+			SettingsPanel,
+			0.25,
+			{
+				Position = OpenPosition
+			}
+		):Play()
+
+		Tween(
+			GearButton,
+			0.25,
+			{
+				Rotation = 90
+			}
+		):Play()
+
+	else
+
+		Tween(
+			SettingsPanel,
+			0.25,
+			{
+				Position = ClosedPosition
+			}
+		):Play()
+
+		Tween(
+			GearButton,
+			0.25,
+			{
+				Rotation = 0
+			}
+		):Play()
+
+	end
+
+end
+
+GearButton.MouseButton1Click:Connect(ToggleSettings)
