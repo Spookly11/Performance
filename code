@@ -1,0 +1,270 @@
+--// Performance UI
+--// Part 1A (Lines 1-100)
+
+--==================================================
+-- Duplicate Protection
+--==================================================
+
+local GUI_NAME = "PerformanceUI"
+
+local Player = game:GetService("Players").LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+local Existing = PlayerGui:FindFirstChild(GUI_NAME)
+
+if Existing then
+    Existing:Destroy()
+end
+
+--==================================================
+-- Services
+--==================================================
+
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+--==================================================
+-- Theme
+--==================================================
+
+local Theme = {
+    Background = Color3.fromRGB(24,24,24),
+    BackgroundTransparency = 0.10,
+
+    Accent = Color3.fromRGB(70,70,70),
+
+    Text = Color3.new(1,1,1),
+    SecondaryText = Color3.fromRGB(185,185,185),
+
+    Red = Color3.fromRGB(221,28,28),
+    Green = Color3.fromRGB(0,255,98)
+}
+
+--==================================================
+-- GUI
+--==================================================
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = GUI_NAME
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+
+--==================================================
+-- Main Window
+--==================================================
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.fromOffset(255,165)
+Main.Position = UDim2.new(0.03,0,0.35,0)
+Main.BackgroundColor3 = Theme.Background
+Main.BackgroundTransparency = Theme.BackgroundTransparency
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Parent = ScreenGui
+
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(0,12)
+Corner.Parent = Main
+
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = Theme.Accent
+Stroke.Thickness = 1
+Stroke.Transparency = 0.35
+Stroke.Parent = Main
+
+--==================================================
+-- Shadow
+--==================================================
+
+local Shadow = Instance.new("ImageLabel")
+Shadow.Name = "Shadow"
+Shadow.AnchorPoint = Vector2.new(0.5,0.5)
+Shadow.Position = UDim2.new(0.5,0,0.5,4)
+Shadow.Size = UDim2.new(1,32,1,32)
+Shadow.BackgroundTransparency = 1
+Shadow.Image = "rbxassetid://1316045217"
+Shadow.ImageTransparency = 0.55
+Shadow.ScaleType = Enum.ScaleType.Slice
+Shadow.SliceCenter = Rect.new(10,10,118,118)
+Shadow.ZIndex = -1
+Shadow.Parent = Main
+
+--==================================================
+-- Title
+--==================================================
+
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.fromOffset(16,10)
+Title.Size = UDim2.fromOffset(180,24)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "Performance"
+Title.TextColor3 = Theme.Text
+Title.TextSize = 18
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Main
+
+--==================================================
+-- Divider
+--==================================================
+
+local Divider = Instance.new("Frame")
+Divider.BorderSizePixel = 0
+Divider.BackgroundColor3 = Theme.Accent
+Divider.BackgroundTransparency = 0.55
+Divider.Position = UDim2.fromOffset(12,40)
+Divider.Size = UDim2.new(1,-24,0,1)
+Divider.Parent = Main
+  --==================================================
+-- Gear Button
+--==================================================
+
+local GearButton = Instance.new("ImageButton")
+GearButton.Name = "GearButton"
+GearButton.Size = UDim2.fromOffset(24,24)
+GearButton.Position = UDim2.new(1,-36,0,10)
+GearButton.BackgroundTransparency = 1
+GearButton.AutoButtonColor = false
+GearButton.Image = "rbxassetid://3926305904"
+GearButton.ImageRectOffset = Vector2.new(964,324)
+GearButton.ImageRectSize = Vector2.new(36,36)
+GearButton.ImageColor3 = Theme.Text
+GearButton.Parent = Main
+
+--==================================================
+-- Tooltip
+--==================================================
+
+local Tooltip = Instance.new("TextLabel")
+Tooltip.Name = "Tooltip"
+Tooltip.AnchorPoint = Vector2.new(0.5,1)
+Tooltip.Position = UDim2.new(0.5,0,0,-6)
+Tooltip.Size = UDim2.fromOffset(72,24)
+Tooltip.BackgroundColor3 = Color3.fromRGB(35,35,35)
+Tooltip.BackgroundTransparency = 0.15
+Tooltip.Text = "Settings"
+Tooltip.Font = Enum.Font.Gotham
+Tooltip.TextSize = 13
+Tooltip.TextColor3 = Theme.Text
+Tooltip.TextTransparency = 1
+Tooltip.Visible = false
+Tooltip.Parent = GearButton
+
+local TooltipCorner = Instance.new("UICorner")
+TooltipCorner.CornerRadius = UDim.new(0,6)
+TooltipCorner.Parent = Tooltip
+
+--==================================================
+-- Tween Helper
+--==================================================
+
+local function Tween(Object, Time, Properties, Style, Direction)
+	return TweenService:Create(
+		Object,
+		TweenInfo.new(
+			Time,
+			Style or Enum.EasingStyle.Quad,
+			Direction or Enum.EasingDirection.Out
+		),
+		Properties
+	)
+end
+
+--==================================================
+-- Tooltip Animation
+--==================================================
+
+GearButton.MouseEnter:Connect(function()
+
+	Tooltip.Visible = true
+
+	Tween(Tooltip,0.15,{
+		TextTransparency = 0
+	}):Play()
+
+	Tween(GearButton,0.15,{
+		Rotation = 15
+	}):Play()
+
+end)
+
+GearButton.MouseLeave:Connect(function()
+
+	local Fade = Tween(Tooltip,0.15,{
+		TextTransparency = 1
+	})
+
+	Fade:Play()
+
+	Fade.Completed:Once(function()
+		Tooltip.Visible = false
+	end)
+
+	Tween(GearButton,0.15,{
+		Rotation = 0
+	}):Play()
+
+end)
+
+--==================================================
+-- Dragging
+--==================================================
+
+local Dragging = false
+local DragInput
+local DragStart
+local StartPosition
+
+local function UpdateDrag(Input)
+
+	local Delta = Input.Position - DragStart
+
+	Main.Position = UDim2.new(
+		StartPosition.X.Scale,
+		StartPosition.X.Offset + Delta.X,
+		StartPosition.Y.Scale,
+		StartPosition.Y.Offset + Delta.Y
+	)
+
+end
+
+Main.InputBegan:Connect(function(Input)
+
+	if Input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+		Dragging = true
+		DragStart = Input.Position
+		StartPosition = Main.Position
+
+		Input.Changed:Connect(function()
+
+			if Input.UserInputState == Enum.UserInputState.End then
+				Dragging = false
+			end
+
+		end)
+
+	end
+
+end)
+
+Main.InputChanged:Connect(function(Input)
+
+	if Input.UserInputType == Enum.UserInputType.MouseMovement then
+		DragInput = Input
+	end
+
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+
+	if Dragging and Input == DragInput then
+		UpdateDrag(Input)
+	end
+
+end)
