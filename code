@@ -9,12 +9,33 @@
       2. "game id" means game.PlaceId (not game.GameId / universe id).
       3. FPS value of exactly 10 falls into the 11-20 bracket
          (your ranges had a gap between "<10" and "11-20").
+      4. The old killstreak counter's spot now holds a Session Kills counter
+         (Total Kills minus a baseline captured when leaderstats first load)
+         and a session stopwatch. The stopwatch counts up from the very
+         first line of this script (before any GetService calls or the
+         PlayerGui wait), as close an approximation of "time since joining
+         this server" as a client-only script can get — Roblox doesn't
+         expose the actual server-join timestamp to client scripts, so this
+         is still exact only if the script auto-executes right at join; a
+         manual/delayed execution will start the count from execution time
+         regardless. Session Kills has its own toggle in Settings, under
+         "Display LB Stats."
 
     Ping/FPS refresh live (~once per second). Kills refresh instantly
     whenever the leaderstats values change. The countdown was removed.
     The main box is draggable and the settings panel follows it.
     ------------------------------------------------------------
 ]]
+
+-- Captured as the very first executable statement in the whole script,
+-- before any GetService calls or the PlayerGui WaitForChild below (which
+-- can yield if PlayerGui hasn't replicated in yet). This removes the only
+-- avoidable slack between "script starts running" and "stopwatch starts
+-- counting." It still can't reflect the actual server-join moment if this
+-- is executed manually well after joining -- Roblox doesn't expose a join
+-- timestamp to client scripts, so closing that gap would require a
+-- server-side script broadcasting the real join time back to the client.
+local sessionStartTime = os.clock()
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -52,6 +73,7 @@ local enabled = {
     ping = true,
     fps = true,
     lbstats = IS_ALLOWED_GAME, -- auto-enabled only when in the right game
+    sessionkills = true,
 }
 
 local lbLocked = not IS_ALLOWED_GAME -- when true, the LB Stats toggle can't be changed
@@ -60,6 +82,10 @@ local dragLocked = false -- when true, the UI can't be dragged; set from saved p
 local currentFPS = 60
 local fpsFrameCount = 0
 local fpsAccumTime = 0
+
+-- Total Kills value captured the moment leaderstats become available, used
+-- as the baseline for the session kills counter below.
+local sessionKillsBaseline = nil
 
 -- ============================================================
 -- HELPERS: color lookups
@@ -121,6 +147,19 @@ local function getLeaderboardStats()
     return monthly, total
 end
 
+-- Inserts thousands-separator commas into a number, e.g. 12345 -> "12,345".
+local function formatNumberWithCommas(n)
+    local formatted = tostring(n)
+    local isNegative = formatted:sub(1, 1) == "-"
+    if isNegative then formatted = formatted:sub(2) end
+    local k
+    repeat
+        formatted, k = formatted:gsub("^(%d+)(%d%d%d)", "%1,%2")
+    until k == 0
+    if isNegative then formatted = "-" .. formatted end
+    return formatted
+end
+
 -- ============================================================
 -- HELPERS: saved preferences (position + drag-lock, persists across executions)
 -- ============================================================
@@ -161,7 +200,7 @@ dragLocked = savedPrefs and savedPrefs.locked or false
 
 -- Forward-declared so the toggle click handlers (created before these are
 -- defined) can call them the instant a switch is flipped.
-local updatePingDisplay, updateFpsDisplay, updateLbDisplay
+local updatePingDisplay, updateFpsDisplay, updateLbDisplay, updateSessionKillsDisplay
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "PingFpsUI"
@@ -173,7 +212,7 @@ screenGui.Parent = PlayerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 340, 0, 150)
+mainFrame.Size = UDim2.new(0, 340, 0, 180)
 mainFrame.Position = (savedPrefs and UDim2.new(0, savedPrefs.x, 0, savedPrefs.y)) or UDim2.new(0, 40, 0, 40)
 mainFrame.BackgroundColor3 = COLORS.background
 mainFrame.BorderSizePixel = 0
@@ -396,6 +435,39 @@ totalLabel.TextSize = 18
 totalLabel.TextXAlignment = Enum.TextXAlignment.Left
 totalLabel.Parent = mainFrame
 
+-- Session Kills (left) — kills gained since this script's Total Kills
+-- baseline was captured (see sessionKillsBaseline / hookLeaderboardLiveUpdates
+-- below). Subject to the same join-time caveat as the stopwatch: the
+-- baseline is captured when leaderstats first become available to this
+-- script, not necessarily the instant you joined.
+local sessionKillsLabel = Instance.new("TextLabel")
+sessionKillsLabel.Name = "SessionKills"
+sessionKillsLabel.BackgroundTransparency = 1
+sessionKillsLabel.Position = UDim2.new(0, 24, 0, 134)
+sessionKillsLabel.Size = UDim2.new(0, 140, 0, 26)
+sessionKillsLabel.Font = Enum.Font.Gotham
+sessionKillsLabel.Text = "Session Kills: --"
+sessionKillsLabel.TextColor3 = COLORS.white
+sessionKillsLabel.TextSize = 18
+sessionKillsLabel.TextXAlignment = Enum.TextXAlignment.Left
+sessionKillsLabel.Parent = mainFrame
+
+-- Session stopwatch (right) — counts up from when this script loaded, as an
+-- approximation of "time since joining this server" (there's no reliable
+-- client-side API for the actual server-join timestamp, so this assumes the
+-- script loads shortly after joining).
+local stopwatchLabel = Instance.new("TextLabel")
+stopwatchLabel.Name = "SessionStopwatch"
+stopwatchLabel.BackgroundTransparency = 1
+stopwatchLabel.Position = UDim2.new(0, 180, 0, 134)
+stopwatchLabel.Size = UDim2.new(0, 136, 0, 26)
+stopwatchLabel.Font = Enum.Font.Gotham
+stopwatchLabel.Text = "0:00:00:00"
+stopwatchLabel.TextColor3 = COLORS.white
+stopwatchLabel.TextSize = 18
+stopwatchLabel.TextXAlignment = Enum.TextXAlignment.Right
+stopwatchLabel.Parent = mainFrame
+
 -- ---------- SETTINGS PANEL (slides out) ----------
 
 local settingsContainer = Instance.new("Frame")
@@ -403,14 +475,14 @@ settingsContainer.Name = "SettingsContainer"
 settingsContainer.BackgroundTransparency = 1
 settingsContainer.ClipsDescendants = true
 settingsContainer.Position = UDim2.new(0, 40 + 340 + 16, 0, 40)
-settingsContainer.Size = UDim2.new(0, 0, 0, 150) -- starts closed
+settingsContainer.Size = UDim2.new(0, 0, 0, 190) -- starts closed
 settingsContainer.Parent = screenGui
 
 local settingsPanel = Instance.new("Frame")
 settingsPanel.Name = "SettingsPanel"
 settingsPanel.BackgroundColor3 = COLORS.background
 settingsPanel.BorderSizePixel = 0
-settingsPanel.Size = UDim2.new(0, 260, 0, 150)
+settingsPanel.Size = UDim2.new(0, 260, 0, 190)
 settingsPanel.Position = UDim2.new(0, 0, 0, 0)
 settingsPanel.Parent = settingsContainer
 
@@ -487,11 +559,12 @@ end
 createToggleRow("Ping", 14, "Display Ping", "ping", false, function() updatePingDisplay() end)
 createToggleRow("Fps", 50, "Display FPS", "fps", false, function() updateFpsDisplay() end)
 local lbToggle = createToggleRow("LbStats", 86, "Display LB Stats", "lbstats", lbLocked, function() updateLbDisplay() end)
+local sessionKillsToggle = createToggleRow("SessionKills", 122, "Display Session Kills", "sessionkills", false, function() updateSessionKillsDisplay() end)
 
 -- Unload button
 local unloadButton = Instance.new("TextButton")
 unloadButton.Name = "UnloadButton"
-unloadButton.Position = UDim2.new(0, 20, 0, 116)
+unloadButton.Position = UDim2.new(0, 20, 0, 156)
 unloadButton.Size = UDim2.new(0, 220, 0, 28)
 unloadButton.BackgroundColor3 = COLORS.unloadRed
 unloadButton.Font = Enum.Font.GothamBold
@@ -512,7 +585,7 @@ local settingsOpen = false
 
 gearButton.MouseButton1Click:Connect(function()
     settingsOpen = not settingsOpen
-    local targetSize = settingsOpen and UDim2.new(0, 260, 0, 150) or UDim2.new(0, 0, 0, 150)
+    local targetSize = settingsOpen and UDim2.new(0, 260, 0, 190) or UDim2.new(0, 0, 0, 190)
     TweenService:Create(settingsContainer, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
         Size = targetSize
     }):Play()
@@ -576,8 +649,8 @@ function updateLbDisplay()
 
     if enabled.lbstats then
         local monthly, total = getLeaderboardStats()
-        monthlyLabel.Text = "Monthly Kills: " .. tostring(monthly or "N/A")
-        totalLabel.Text = "Total Kills: " .. tostring(total or "N/A")
+        monthlyLabel.Text = "Monthly Kills: " .. (monthly and formatNumberWithCommas(monthly) or "N/A")
+        totalLabel.Text = "Total Kills: " .. (total and formatNumberWithCommas(total) or "N/A")
         monthlyLabel.TextColor3 = COLORS.white
         totalLabel.TextColor3 = COLORS.white
     else
@@ -589,6 +662,28 @@ function updateLbDisplay()
 
     if lbToggle then
         lbToggle.Refresh()
+    end
+end
+
+-- Kills gained since sessionKillsBaseline was captured (nil until the Total
+-- Kills stat has been found at least once).
+function updateSessionKillsDisplay()
+    if enabled.sessionkills then
+        local _, total = getLeaderboardStats()
+        if total and sessionKillsBaseline then
+            sessionKillsLabel.Text = "Session Kills: " .. formatNumberWithCommas(total - sessionKillsBaseline)
+            sessionKillsLabel.TextColor3 = COLORS.white
+        else
+            sessionKillsLabel.Text = "Session Kills: N/A"
+            sessionKillsLabel.TextColor3 = COLORS.disabledGray
+        end
+    else
+        sessionKillsLabel.Text = "Session Kills: Disabled"
+        sessionKillsLabel.TextColor3 = COLORS.disabledGray
+    end
+
+    if sessionKillsToggle then
+        sessionKillsToggle.Refresh()
     end
 end
 
@@ -609,12 +704,41 @@ local function hookLeaderboardLiveUpdates()
         table.insert(lbConnections, monthlyStat.Changed:Connect(updateLbDisplay))
     end
     if totalStat then
-        table.insert(lbConnections, totalStat.Changed:Connect(updateLbDisplay))
+        sessionKillsBaseline = totalStat.Value
+        table.insert(lbConnections, totalStat.Changed:Connect(function()
+            updateLbDisplay()
+            updateSessionKillsDisplay()
+        end))
+        updateSessionKillsDisplay()
     end
 end
 
 updateLbDisplay()
+updateSessionKillsDisplay()
 task.spawn(hookLeaderboardLiveUpdates)
+
+-- ============================================================
+-- SESSION STOPWATCH
+-- ============================================================
+-- Counts up from sessionStartTime (set on the very first line of the
+-- script, before anything else runs, so there's no avoidable startup slack
+-- between "script starts" and "stopwatch starts"). Format is D:HH:MM:SS.
+
+local function formatElapsedTime(totalSeconds)
+    totalSeconds = math.max(0, math.floor(totalSeconds))
+    local days = math.floor(totalSeconds / 86400)
+    local hours = math.floor((totalSeconds % 86400) / 3600)
+    local minutes = math.floor((totalSeconds % 3600) / 60)
+    local seconds = totalSeconds % 60
+    return ("%d:%02d:%02d:%02d"):format(days, hours, minutes, seconds)
+end
+
+task.spawn(function()
+    while stopwatchLabel.Parent do
+        stopwatchLabel.Text = formatElapsedTime(os.clock() - sessionStartTime)
+        task.wait(1)
+    end
+end)
 
 -- ============================================================
 -- DRAGGING
