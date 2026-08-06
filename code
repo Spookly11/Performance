@@ -668,6 +668,15 @@ end
 -- Kills gained since sessionKillsBaseline was captured (nil until the Total
 -- Kills stat has been found at least once).
 function updateSessionKillsDisplay()
+    if not IS_ALLOWED_GAME then
+        sessionKillsLabel.Text = "Session Kills: Disabled"
+        sessionKillsLabel.TextColor3 = COLORS.disabledGray
+        if sessionKillsToggle then
+            sessionKillsToggle.Refresh()
+        end
+        return
+    end
+
     if enabled.sessionkills then
         local _, total = getLeaderboardStats()
         if total and sessionKillsBaseline then
