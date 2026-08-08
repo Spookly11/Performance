@@ -19,12 +19,17 @@ local IS_ALLOWED_GAME = (game.PlaceId == ALLOWED_PLACE_ID)
 
 local COLORS = {
     background   = Color3.fromRGB(13, 17, 40),
+    panel        = Color3.fromRGB(16, 21, 48),
+    accent       = Color3.fromRGB(130, 90, 255), -- purple divider accent
     unloadRed    = Color3.fromHex and Color3.fromHex("#dd1c1c") or Color3.fromRGB(221, 28, 28),
     disabledGray = Color3.fromRGB(140, 140, 140),
     toggleOn     = Color3.fromRGB(70, 200, 130),
     toggleOff    = Color3.fromRGB(200, 60, 60),
     white        = Color3.fromRGB(255, 255, 255),
 }
+
+local PANEL_TRANSPARENCY   = 0.08
+local ELEMENT_TRANSPARENCY = 0.12
 
 -- ============================================================
 -- STATE
@@ -35,19 +40,21 @@ local unloaded = false
 local enabled = {
     ping = true,
     fps = true,
-    lbstats = IS_ALLOWED_GAME, -- auto-enabled only when in the right game
-    sessionkills = true,
+    lbstats = IS_ALLOWED_GAME,      
+    sessionkills = IS_ALLOWED_GAME,
+    execution = true,
 }
 
-local lbLocked = not IS_ALLOWED_GAME -- when true, the LB Stats toggle can't be changed
+
+local lbLocked = not IS_ALLOWED_GAME
+local sessionKillsLocked = not IS_ALLOWED_GAME
 local dragLocked = false -- when true, the UI can't be dragged; set from saved prefs below
 
 local currentFPS = 60
 local fpsFrameCount = 0
 local fpsAccumTime = 0
 
--- Total Kills value captured the moment leaderstats become available, used
--- as the baseline for the session kills counter below.
+
 local sessionKillsBaseline = nil
 
 -- ============================================================
@@ -92,12 +99,12 @@ local function getPing()
     return 0
 end
 
--- Reads the rolling FPS average kept by the RenderStepped connection below.
+
 local function getFps()
     return math.floor(currentFPS + 0.5)
 end
 
--- "Monthly Kills" is displayed from the leaderstat named "Kills".
+
 local function getLeaderboardStats()
     local monthly, total = nil, nil
     local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
@@ -110,7 +117,14 @@ local function getLeaderboardStats()
     return monthly, total
 end
 
--- Inserts thousands-separator commas into a number, e.g. 12345 -> "12,345".
+local function getUsername()
+    if LocalPlayer.DisplayName and LocalPlayer.DisplayName ~= LocalPlayer.Name then
+        return LocalPlayer.DisplayName .. " (@" .. LocalPlayer.Name .. ")"
+    end
+    return LocalPlayer.Name
+end
+
+
 local function formatNumberWithCommas(n)
     local formatted = tostring(n)
     local isNegative = formatted:sub(1, 1) == "-"
@@ -124,12 +138,8 @@ local function formatNumberWithCommas(n)
 end
 
 -- ============================================================
--- HELPERS: saved preferences (position + drag-lock, persists across executions)
+-- HELPERS: saved preferences (position + drag-lock + execution count)
 -- ============================================================
--- Uses the executor's file functions (writefile/readfile/isfile). If your
--- executor doesn't expose these, this just silently no-ops and the UI
--- always opens at the default spot, unlocked.
-
 local PREFS_FILE = "PingFpsUI_Prefs.json"
 
 local function loadSavedPrefs()
@@ -142,28 +152,37 @@ local function loadSavedPrefs()
     return nil
 end
 
-local function saveCurrentPrefs(pos, locked)
+local function savePrefs(prefsTable)
     pcall(function()
         if writefile then
-            writefile(PREFS_FILE, HttpService:JSONEncode({
-                x = pos.X.Offset,
-                y = pos.Y.Offset,
-                locked = locked,
-            }))
+            writefile(PREFS_FILE, HttpService:JSONEncode(prefsTable))
         end
     end)
 end
 
-local savedPrefs = loadSavedPrefs()
-dragLocked = savedPrefs and savedPrefs.locked or false
+local savedPrefs = loadSavedPrefs() or {}
+
+-- Restore the island's lock state from the previous execution.
+-- This is independent of its saved position.
+dragLocked = savedPrefs.locked == true
+
+local executionCount = (savedPrefs.execCount or 0) + 1
+savedPrefs.execCount = executionCount
+savedPrefs.locked = dragLocked
+savePrefs(savedPrefs)
+
+local function persistPosition(pos)
+    savedPrefs.x = pos.X.Offset
+    savedPrefs.y = pos.Y.Offset
+    savedPrefs.locked = dragLocked
+    savePrefs(savedPrefs)
+end
 
 -- ============================================================
 -- BUILD UI
 -- ============================================================
 
--- Forward-declared so the toggle click handlers (created before these are
--- defined) can call them the instant a switch is flipped.
-local updatePingDisplay, updateFpsDisplay, updateLbDisplay, updateSessionKillsDisplay
+local updatePingDisplay, updateFpsDisplay, updateLbDisplay, updateSessionKillsDisplay, updateExecutionDisplay
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "PingFpsUI"
@@ -171,122 +190,78 @@ screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = PlayerGui
 
--- ---------- MAIN FRAME ----------
+-- ---------- TOP BAR (ISLAND) ----------
+-- Always-visible strip showing Ping / FPS / Monthly Kills / Total Kills,
+-- plus the lock and settings (gear) buttons. This replaces the old single
+-- stat-heavy box; the gear button now opens a separate centered menu.
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 340, 0, 180)
-mainFrame.Position = (savedPrefs and UDim2.new(0, savedPrefs.x, 0, savedPrefs.y)) or UDim2.new(0, 40, 0, 40)
-mainFrame.BackgroundColor3 = COLORS.background
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = screenGui
+local TOPBAR_WIDTH, TOPBAR_HEIGHT = 600, 56
 
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 18)
-mainCorner.Parent = mainFrame
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(0, TOPBAR_WIDTH, 0, TOPBAR_HEIGHT)
+topBar.Position = (savedPrefs.x ~= nil and savedPrefs.y ~= nil)
+    and UDim2.new(0, savedPrefs.x, 0, savedPrefs.y)
+    or UDim2.new(0, 40, 0, 40)
+topBar.BackgroundColor3 = COLORS.background
+topBar.BackgroundTransparency = PANEL_TRANSPARENCY
+topBar.BorderSizePixel = 0
+topBar.Parent = screenGui
 
--- Ping label (static "Ping:")
-local pingStatic = Instance.new("TextLabel")
-pingStatic.Name = "PingStatic"
-pingStatic.BackgroundTransparency = 1
-pingStatic.Position = UDim2.new(0, 24, 0, 20)
-pingStatic.Size = UDim2.new(0, 60, 0, 30)
-pingStatic.Font = Enum.Font.GothamBold
-pingStatic.Text = "Ping:"
-pingStatic.TextColor3 = COLORS.white
-pingStatic.TextSize = 20
-pingStatic.TextXAlignment = Enum.TextXAlignment.Left
-pingStatic.Parent = mainFrame
+local topBarCorner = Instance.new("UICorner")
+topBarCorner.CornerRadius = UDim.new(0, 18)
+topBarCorner.Parent = topBar
 
-local pingValue = Instance.new("TextLabel")
-pingValue.Name = "PingValue"
-pingValue.BackgroundTransparency = 1
-pingValue.Position = UDim2.new(0, 84, 0, 20)
-pingValue.Size = UDim2.new(0, 80, 0, 30)
-pingValue.Font = Enum.Font.GothamBold
-pingValue.Text = "100"
-pingValue.TextColor3 = getPingColor(100)
-pingValue.TextSize = 20
-pingValue.TextXAlignment = Enum.TextXAlignment.Left
-pingValue.Parent = mainFrame
+local function createStatCell(xPos, width, labelText)
+    local static = Instance.new("TextLabel")
+    static.BackgroundTransparency = 1
+    static.Position = UDim2.new(0, xPos, 0, 7)
+    static.Size = UDim2.new(0, width, 0, 16)
+    static.Font = Enum.Font.Gotham
+    static.Text = labelText
+    static.TextColor3 = COLORS.disabledGray
+    static.TextSize = 12
+    static.TextXAlignment = Enum.TextXAlignment.Left
+    static.Parent = topBar
 
--- FPS label
-local fpsStatic = Instance.new("TextLabel")
-fpsStatic.Name = "FpsStatic"
-fpsStatic.BackgroundTransparency = 1
-fpsStatic.Position = UDim2.new(0, 170, 0, 20)
-fpsStatic.Size = UDim2.new(0, 60, 0, 30)
-fpsStatic.Font = Enum.Font.GothamBold
-fpsStatic.Text = "FPS:"
-fpsStatic.TextColor3 = COLORS.white
-fpsStatic.TextSize = 20
-fpsStatic.TextXAlignment = Enum.TextXAlignment.Left
-fpsStatic.Parent = mainFrame
+    local value = Instance.new("TextLabel")
+    value.BackgroundTransparency = 1
+    value.Position = UDim2.new(0, xPos, 0, 24)
+    value.Size = UDim2.new(0, width, 0, 24)
+    value.Font = Enum.Font.GothamBold
+    value.Text = "--"
+    value.TextColor3 = COLORS.white
+    value.TextSize = 19
+    value.TextXAlignment = Enum.TextXAlignment.Left
+    value.Parent = topBar
 
-local fpsValue = Instance.new("TextLabel")
-fpsValue.Name = "FpsValue"
-fpsValue.BackgroundTransparency = 1
-fpsValue.Position = UDim2.new(0, 222, 0, 20)
-fpsValue.Size = UDim2.new(0, 80, 0, 30)
-fpsValue.Font = Enum.Font.GothamBold
-fpsValue.Text = "100"
-fpsValue.TextColor3 = getFpsColor(100)
-fpsValue.TextSize = 20
-fpsValue.TextXAlignment = Enum.TextXAlignment.Left
-fpsValue.Parent = mainFrame
+    return value
+end
 
--- Gear button
-local gearButton = Instance.new("ImageButton")
-gearButton.Name = "GearButton"
-gearButton.BackgroundTransparency = 1
-gearButton.Position = UDim2.new(0, 290, 0, 16)
-gearButton.Size = UDim2.new(0, 32, 0, 32)
-gearButton.Image = "rbxassetid://6031280882" -- standalone settings/gear icon
-gearButton.ImageColor3 = Color3.fromRGB(60, 140, 255)
-gearButton.Parent = mainFrame
+local STAT_CELL_WIDTH, STAT_CELL_GAP = 105, 16
 
--- Gear tooltip ("Settings") - anchored so it's centered directly above the gear
-local tooltip = Instance.new("TextLabel")
-tooltip.Name = "Tooltip"
-tooltip.AnchorPoint = Vector2.new(0.5, 1)
-tooltip.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-tooltip.BackgroundTransparency = 0.2
-tooltip.Position = UDim2.new(0.5, 0, 0, -8)
-tooltip.Size = UDim2.new(0, 80, 0, 26)
-tooltip.Font = Enum.Font.Gotham
-tooltip.Text = "Settings"
-tooltip.TextColor3 = COLORS.white
-tooltip.TextSize = 14
-tooltip.Visible = false
-tooltip.ZIndex = 5
-tooltip.Parent = gearButton
+local pingValue    = createStatCell(20,                                                105, "PING")
+local fpsValue     = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP),             105, "FPS")
+local monthlyValue = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP) * 2,         105, "MONTHLY")
+local totalValue   = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP) * 3,         105, "TOTAL")
 
-local tooltipCorner = Instance.new("UICorner")
-tooltipCorner.CornerRadius = UDim.new(0, 6)
-tooltipCorner.Parent = tooltip
+-- Lock button - toggles whether the top bar can be dragged. Built from plain
+-- Frames (body + ring + hollow) instead of an image asset, so there's no
 
-gearButton.MouseEnter:Connect(function()
-    tooltip.Visible = true
-end)
-gearButton.MouseLeave:Connect(function()
-    tooltip.Visible = false
-end)
-
--- Lock button (directly under the gear) - toggles whether the UI can be dragged.
--- Built from plain Frames (body + ring + hollow) instead of an image asset,
--- so there's no external asset ID to break.
 local lockButton = Instance.new("TextButton")
 lockButton.Name = "LockButton"
 lockButton.BackgroundTransparency = 1
-lockButton.Position = UDim2.new(0, 290, 0, 56)
+-- Nudged up 4px from the gear button's y (12) because the padlock glyph
+-- inside this button's bounds sits lower than the gear image does inside
+-- its own — at the same box y they read as visually misaligned.
+lockButton.Position = UDim2.new(0, 508, 0, 8)
 lockButton.Size = UDim2.new(0, 32, 0, 32)
 lockButton.Text = ""
-lockButton.Parent = mainFrame
+lockButton.Parent = topBar
 
 local lockColorOn = Color3.fromRGB(60, 140, 255)  -- unlocked (draggable)
 local lockColorOff = COLORS.toggleOff             -- locked (can't drag)
 
--- Ring (shackle) - a rounded pill shape...
 local lockRing = Instance.new("Frame")
 lockRing.Name = "Ring"
 lockRing.AnchorPoint = Vector2.new(0.5, 1)
@@ -301,8 +276,6 @@ local lockRingCorner = Instance.new("UICorner")
 lockRingCorner.CornerRadius = UDim.new(0.5, 0)
 lockRingCorner.Parent = lockRing
 
--- ...with its middle hollowed out (colored to match the box behind it)
--- so only a ring/arc remains, forming the shackle.
 local lockHole = Instance.new("Frame")
 lockHole.Name = "Hole"
 lockHole.AnchorPoint = Vector2.new(0.5, 1)
@@ -317,8 +290,6 @@ local lockHoleCorner = Instance.new("UICorner")
 lockHoleCorner.CornerRadius = UDim.new(0.5, 0)
 lockHoleCorner.Parent = lockHole
 
--- Body - covers the bottom of the ring so it reads as a padlock shackle
--- rising out of the lock body, not a full ring.
 local lockBody = Instance.new("Frame")
 lockBody.Name = "Body"
 lockBody.AnchorPoint = Vector2.new(0.5, 0)
@@ -339,7 +310,6 @@ local function refreshLockVisual()
     lockBody.BackgroundColor3 = color
 end
 
--- Lock tooltip - anchored so it's centered directly above the lock icon
 local lockTooltip = Instance.new("TextLabel")
 lockTooltip.Name = "Tooltip"
 lockTooltip.AnchorPoint = Vector2.new(0.5, 1)
@@ -359,121 +329,162 @@ local lockTooltipCorner = Instance.new("UICorner")
 lockTooltipCorner.CornerRadius = UDim.new(0, 6)
 lockTooltipCorner.Parent = lockTooltip
 
-lockButton.MouseEnter:Connect(function()
-    lockTooltip.Visible = true
-end)
-lockButton.MouseLeave:Connect(function()
-    lockTooltip.Visible = false
-end)
+lockButton.MouseEnter:Connect(function() lockTooltip.Visible = true end)
+lockButton.MouseLeave:Connect(function() lockTooltip.Visible = false end)
 
 lockButton.MouseButton1Click:Connect(function()
     dragLocked = not dragLocked
     refreshLockVisual()
-    saveCurrentPrefs(mainFrame.Position, dragLocked)
+    persistPosition(topBar.Position)
 end)
 
--- Monthly Kills
-local monthlyLabel = Instance.new("TextLabel")
-monthlyLabel.Name = "MonthlyKills"
-monthlyLabel.BackgroundTransparency = 1
-monthlyLabel.Position = UDim2.new(0, 24, 0, 74)
-monthlyLabel.Size = UDim2.new(0, 300, 0, 26)
-monthlyLabel.Font = Enum.Font.Gotham
-monthlyLabel.Text = "Monthly Kills: 0"
-monthlyLabel.TextColor3 = COLORS.white
-monthlyLabel.TextSize = 18
-monthlyLabel.TextXAlignment = Enum.TextXAlignment.Left
-monthlyLabel.Parent = mainFrame
+-- Gear button - lives on the top bar (the "island"), opens the centered
+-- settings menu when clicked.
+local gearButton = Instance.new("ImageButton")
+gearButton.Name = "GearButton"
+gearButton.BackgroundTransparency = 1
+gearButton.Position = UDim2.new(0, 548, 0, 12)
+gearButton.Size = UDim2.new(0, 32, 0, 32)
+gearButton.Image = "rbxassetid://6031280882" -- standalone settings/gear icon
+gearButton.ImageColor3 = Color3.fromRGB(60, 140, 255)
+gearButton.Parent = topBar
 
--- Total Kills
-local totalLabel = Instance.new("TextLabel")
-totalLabel.Name = "TotalKills"
-totalLabel.BackgroundTransparency = 1
-totalLabel.Position = UDim2.new(0, 24, 0, 104)
-totalLabel.Size = UDim2.new(0, 300, 0, 26)
-totalLabel.Font = Enum.Font.Gotham
-totalLabel.Text = "Total Kills: 0"
-totalLabel.TextColor3 = COLORS.white
-totalLabel.TextSize = 18
-totalLabel.TextXAlignment = Enum.TextXAlignment.Left
-totalLabel.Parent = mainFrame
+local tooltip = Instance.new("TextLabel")
+tooltip.Name = "Tooltip"
+tooltip.AnchorPoint = Vector2.new(0.5, 1)
+tooltip.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+tooltip.BackgroundTransparency = 0.2
+tooltip.Position = UDim2.new(0.5, 0, 0, -8)
+tooltip.Size = UDim2.new(0, 80, 0, 26)
+tooltip.Font = Enum.Font.Gotham
+tooltip.Text = "Settings"
+tooltip.TextColor3 = COLORS.white
+tooltip.TextSize = 14
+tooltip.Visible = false
+tooltip.ZIndex = 5
+tooltip.Parent = gearButton
 
--- Session Kills (left) — kills gained since this script's Total Kills
--- baseline was captured (see sessionKillsBaseline / hookLeaderboardLiveUpdates
--- below). Subject to the same join-time caveat as the stopwatch: the
--- baseline is captured when leaderstats first become available to this
--- script, not necessarily the instant you joined.
-local sessionKillsLabel = Instance.new("TextLabel")
-sessionKillsLabel.Name = "SessionKills"
-sessionKillsLabel.BackgroundTransparency = 1
-sessionKillsLabel.Position = UDim2.new(0, 24, 0, 134)
-sessionKillsLabel.Size = UDim2.new(0, 140, 0, 26)
-sessionKillsLabel.Font = Enum.Font.Gotham
-sessionKillsLabel.Text = "Session Kills: --"
-sessionKillsLabel.TextColor3 = COLORS.white
-sessionKillsLabel.TextSize = 18
-sessionKillsLabel.TextXAlignment = Enum.TextXAlignment.Left
-sessionKillsLabel.Parent = mainFrame
+local tooltipCorner = Instance.new("UICorner")
+tooltipCorner.CornerRadius = UDim.new(0, 6)
+tooltipCorner.Parent = tooltip
 
--- Session stopwatch (right) — counts up from when this script loaded, as an
--- approximation of "time since joining this server" (there's no reliable
--- client-side API for the actual server-join timestamp, so this assumes the
--- script loads shortly after joining).
+gearButton.MouseEnter:Connect(function() tooltip.Visible = true end)
+gearButton.MouseLeave:Connect(function() tooltip.Visible = false end)
+
+-- ---------- SETTINGS MENU (centered on screen, opens from the gear) ----------
+
+local SETTINGS_WIDTH, SETTINGS_HEIGHT = 520, 316
+
+local settingsMenu = Instance.new("Frame")
+settingsMenu.Name = "SettingsMenu"
+settingsMenu.AnchorPoint = Vector2.new(0.5, 0.5)
+settingsMenu.Position = UDim2.new(0.5, 0, 0.5, 0) -- middle of the screen
+settingsMenu.Size = UDim2.new(0, 0, 0, 0)          -- opens via tween below
+settingsMenu.BackgroundColor3 = COLORS.panel
+settingsMenu.BackgroundTransparency = PANEL_TRANSPARENCY
+settingsMenu.ClipsDescendants = true
+settingsMenu.Visible = false
+settingsMenu.ZIndex = 10
+settingsMenu.Parent = screenGui
+
+local settingsMenuCorner = Instance.new("UICorner")
+settingsMenuCorner.CornerRadius = UDim.new(0, 20)
+settingsMenuCorner.Parent = settingsMenu
+
+-- Top row: session time (left) + username (right)
 local stopwatchLabel = Instance.new("TextLabel")
 stopwatchLabel.Name = "SessionStopwatch"
 stopwatchLabel.BackgroundTransparency = 1
-stopwatchLabel.Position = UDim2.new(0, 180, 0, 134)
-stopwatchLabel.Size = UDim2.new(0, 136, 0, 26)
+stopwatchLabel.Position = UDim2.new(0, 20, 0, 16)
+stopwatchLabel.Size = UDim2.new(0, 220, 0, 22)
 stopwatchLabel.Font = Enum.Font.Gotham
-stopwatchLabel.Text = "0:00:00:00"
+stopwatchLabel.Text = "Session Time: 0:00:00:00"
 stopwatchLabel.TextColor3 = COLORS.white
-stopwatchLabel.TextSize = 18
-stopwatchLabel.TextXAlignment = Enum.TextXAlignment.Right
-stopwatchLabel.Parent = mainFrame
+stopwatchLabel.TextSize = 14
+stopwatchLabel.TextXAlignment = Enum.TextXAlignment.Left
+stopwatchLabel.ZIndex = 11
+stopwatchLabel.Parent = settingsMenu
 
--- ---------- SETTINGS PANEL (slides out) ----------
+local usernameLabel = Instance.new("TextLabel")
+usernameLabel.Name = "Username"
+usernameLabel.BackgroundTransparency = 1
+usernameLabel.Position = UDim2.new(0, 230, 0, 16)
+usernameLabel.Size = UDim2.new(0, 270, 0, 22)
+usernameLabel.Font = Enum.Font.GothamBold
+usernameLabel.Text = getUsername()
+usernameLabel.TextColor3 = COLORS.white
+usernameLabel.TextSize = 14
+usernameLabel.TextXAlignment = Enum.TextXAlignment.Right
+usernameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+usernameLabel.ZIndex = 11
+usernameLabel.Parent = settingsMenu
 
-local settingsContainer = Instance.new("Frame")
-settingsContainer.Name = "SettingsContainer"
-settingsContainer.BackgroundTransparency = 1
-settingsContainer.ClipsDescendants = true
-settingsContainer.Position = UDim2.new(0, 40 + 340 + 16, 0, 40)
-settingsContainer.Size = UDim2.new(0, 0, 0, 190) -- starts closed
-settingsContainer.Parent = screenGui
+-- Purple accent divider (echoes the progress-bar look from the concept)
+local divider = Instance.new("Frame")
+divider.Name = "Divider"
+divider.BackgroundColor3 = COLORS.accent
+divider.BackgroundTransparency = 0.25
+divider.BorderSizePixel = 0
+divider.Position = UDim2.new(0, 20, 0, 44)
+divider.Size = UDim2.new(1, -40, 0, 3)
+divider.ZIndex = 11
+divider.Parent = settingsMenu
 
-local settingsPanel = Instance.new("Frame")
-settingsPanel.Name = "SettingsPanel"
-settingsPanel.BackgroundColor3 = COLORS.background
-settingsPanel.BorderSizePixel = 0
-settingsPanel.Size = UDim2.new(0, 260, 0, 190)
-settingsPanel.Position = UDim2.new(0, 0, 0, 0)
-settingsPanel.Parent = settingsContainer
+local dividerCorner = Instance.new("UICorner")
+dividerCorner.CornerRadius = UDim.new(1, 0)
+dividerCorner.Parent = divider
 
-local settingsCorner = Instance.new("UICorner")
-settingsCorner.CornerRadius = UDim.new(0, 18)
-settingsCorner.Parent = settingsPanel
+-- Left column: Session Kills + Times Executed
+local sessionKillsLabel = Instance.new("TextLabel")
+sessionKillsLabel.Name = "SessionKills"
+sessionKillsLabel.BackgroundTransparency = 1
+sessionKillsLabel.Position = UDim2.new(0, 20, 0, 62)
+sessionKillsLabel.Size = UDim2.new(0, 210, 0, 24)
+sessionKillsLabel.Font = Enum.Font.Gotham
+sessionKillsLabel.Text = "Session Kills: --"
+sessionKillsLabel.TextColor3 = COLORS.white
+sessionKillsLabel.TextSize = 15
+sessionKillsLabel.TextXAlignment = Enum.TextXAlignment.Left
+sessionKillsLabel.ZIndex = 11
+sessionKillsLabel.Parent = settingsMenu
 
--- generic toggle builder
+local executionLabel = Instance.new("TextLabel")
+executionLabel.Name = "ExecutionCount"
+executionLabel.BackgroundTransparency = 1
+executionLabel.Position = UDim2.new(0, 20, 0, 92)
+executionLabel.Size = UDim2.new(0, 210, 0, 24)
+executionLabel.Font = Enum.Font.Gotham
+executionLabel.Text = "Times Executed: " .. formatNumberWithCommas(executionCount)
+executionLabel.TextColor3 = COLORS.white
+executionLabel.TextSize = 15
+executionLabel.TextXAlignment = Enum.TextXAlignment.Left
+executionLabel.ZIndex = 11
+executionLabel.Parent = settingsMenu
+
+-- Right column: toggle rows (generic builder, reused for every switch)
 local toggles = {}
 
 local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle)
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
-    label.Position = UDim2.new(0, 20, 0, yPos)
-    label.Size = UDim2.new(0, 150, 0, 30)
+    label.Position = UDim2.new(0, 330, 0, yPos)
+    label.Size = UDim2.new(0, 110, 0, 22)
     label.Font = Enum.Font.Gotham
     label.Text = labelText
     label.TextColor3 = COLORS.white
-    label.TextSize = 16
+    label.TextSize = 14
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = settingsPanel
+    label.ZIndex = 11
+    label.Parent = settingsMenu
 
     local toggleFrame = Instance.new("Frame")
     toggleFrame.Name = name .. "Toggle"
-    toggleFrame.Position = UDim2.new(0, 190, 0, yPos + 2)
-    toggleFrame.Size = UDim2.new(0, 50, 0, 26)
+    toggleFrame.Position = UDim2.new(0, 456, 0, yPos - 1)
+    toggleFrame.Size = UDim2.new(0, 44, 0, 22)
     toggleFrame.BackgroundColor3 = enabled[stateKey] and COLORS.toggleOn or COLORS.toggleOff
-    toggleFrame.Parent = settingsPanel
+    toggleFrame.BackgroundTransparency = ELEMENT_TRANSPARENCY
+    toggleFrame.ZIndex = 11
+    toggleFrame.Parent = settingsMenu
 
     local toggleCorner = Instance.new("UICorner")
     toggleCorner.CornerRadius = UDim.new(1, 0)
@@ -481,9 +492,11 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
 
     local knob = Instance.new("Frame")
     knob.Name = "Knob"
-    knob.Size = UDim2.new(0, 22, 0, 22)
-    knob.Position = enabled[stateKey] and UDim2.new(1, -24, 0, 2) or UDim2.new(0, 2, 0, 2)
+    knob.Size = UDim2.new(0, 18, 0, 18)
+    knob.Position = enabled[stateKey] and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
     knob.BackgroundColor3 = COLORS.white
+    knob.BackgroundTransparency = 0.05
+    knob.ZIndex = 12
     knob.Parent = toggleFrame
 
     local knobCorner = Instance.new("UICorner")
@@ -494,19 +507,30 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
     button.BackgroundTransparency = 1
     button.Size = UDim2.new(1, 0, 1, 0)
     button.Text = ""
+    button.ZIndex = 13
     button.Parent = toggleFrame
 
     local toggleObj = { Frame = toggleFrame, Knob = knob, Key = stateKey, Locked = locked }
 
+    -- Locked toggles (Leaderboard / Session Kills outside the allowed game)
+    -- always render as gray + off, regardless of the underlying `enabled`
+    -- value, and never move when clicked. This is what keeps Session Kills
+    -- visually disabled instead of looking live and tappable.
     local function refreshVisual()
+        if toggleObj.Locked then
+            toggleFrame.BackgroundColor3 = COLORS.disabledGray
+            TweenService:Create(knob, TweenInfo.new(0.15), { Position = UDim2.new(0, 2, 0, 2) }):Play()
+            return
+        end
         local on = enabled[stateKey]
         toggleFrame.BackgroundColor3 = on and COLORS.toggleOn or COLORS.toggleOff
         TweenService:Create(knob, TweenInfo.new(0.15), {
-            Position = on and UDim2.new(1, -24, 0, 2) or UDim2.new(0, 2, 0, 2)
+            Position = on and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
         }):Play()
     end
 
     toggleObj.Refresh = refreshVisual
+    refreshVisual()
 
     button.MouseButton1Click:Connect(function()
         if toggleObj.Locked then return end
@@ -519,39 +543,66 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
     return toggleObj
 end
 
-createToggleRow("Ping", 14, "Display Ping", "ping", false, function() updatePingDisplay() end)
-createToggleRow("Fps", 50, "Display FPS", "fps", false, function() updateFpsDisplay() end)
-local lbToggle = createToggleRow("LbStats", 86, "Display LB Stats", "lbstats", lbLocked, function() updateLbDisplay() end)
-local sessionKillsToggle = createToggleRow("SessionKills", 122, "Display Session Kills", "sessionkills", false, function() updateSessionKillsDisplay() end)
+createToggleRow("Ping", 62, "Ping", "ping", false, function() updatePingDisplay() end)
+createToggleRow("Fps", 92, "FPS", "fps", false, function() updateFpsDisplay() end)
+local lbToggle = createToggleRow("LbStats", 122, "Leaderboard", "lbstats", lbLocked, function() updateLbDisplay() end)
+local sessionKillsToggle = createToggleRow("SessionKills", 152, "Session Kills", "sessionkills", sessionKillsLocked, function() updateSessionKillsDisplay() end)
+local executionToggle = createToggleRow("Execution", 182, "Execution", "execution", false, function() updateExecutionDisplay() end)
 
 -- Unload button
 local unloadButton = Instance.new("TextButton")
 unloadButton.Name = "UnloadButton"
-unloadButton.Position = UDim2.new(0, 20, 0, 156)
-unloadButton.Size = UDim2.new(0, 220, 0, 28)
+unloadButton.Position = UDim2.new(0, 20, 0, 276)
+unloadButton.Size = UDim2.new(1, -40, 0, 34)
 unloadButton.BackgroundColor3 = COLORS.unloadRed
+unloadButton.BackgroundTransparency = ELEMENT_TRANSPARENCY
 unloadButton.Font = Enum.Font.GothamBold
 unloadButton.Text = "UNLOAD SCRIPT"
 unloadButton.TextColor3 = Color3.fromRGB(20, 0, 0)
 unloadButton.TextSize = 16
-unloadButton.Parent = settingsPanel
+unloadButton.ZIndex = 11
+unloadButton.Parent = settingsMenu
 
 local unloadCorner = Instance.new("UICorner")
 unloadCorner.CornerRadius = UDim.new(0, 10)
 unloadCorner.Parent = unloadButton
 
 -- ============================================================
--- SETTINGS PANEL OPEN/CLOSE
+-- SETTINGS MENU OPEN/CLOSE
 -- ============================================================
 
 local settingsOpen = false
+local menuSizeTween
+
+local function setSettingsOpen(open)
+    settingsOpen = open
+
+    -- Cancel whatever's still playing before starting the opposite
+    -- animation, otherwise an open/close/open in quick succession leaves two
+    -- tweens fighting over the same Size property.
+    if menuSizeTween then menuSizeTween:Cancel() end
+
+    if open then
+        settingsMenu.Visible = true
+        menuSizeTween = TweenService:Create(settingsMenu, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, SETTINGS_WIDTH, 0, SETTINGS_HEIGHT)
+        })
+        menuSizeTween:Play()
+    else
+        menuSizeTween = TweenService:Create(settingsMenu, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0)
+        })
+        menuSizeTween:Play()
+        menuSizeTween.Completed:Connect(function()
+            if not settingsOpen then
+                settingsMenu.Visible = false
+            end
+        end)
+    end
+end
 
 gearButton.MouseButton1Click:Connect(function()
-    settingsOpen = not settingsOpen
-    local targetSize = settingsOpen and UDim2.new(0, 260, 0, 190) or UDim2.new(0, 0, 0, 190)
-    TweenService:Create(settingsContainer, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Size = targetSize
-    }):Play()
+    setSettingsOpen(not settingsOpen)
 end)
 
 -- ============================================================
@@ -564,7 +615,7 @@ function updatePingDisplay()
         pingValue.Text = tostring(ping)
         pingValue.TextColor3 = getPingColor(ping)
     else
-        pingValue.Text = "Disabled"
+        pingValue.Text = "Off"
         pingValue.TextColor3 = COLORS.disabledGray
     end
 end
@@ -575,14 +626,12 @@ function updateFpsDisplay()
         fpsValue.Text = tostring(fps)
         fpsValue.TextColor3 = getFpsColor(fps)
     else
-        fpsValue.Text = "Disabled"
+        fpsValue.Text = "Off"
         fpsValue.TextColor3 = COLORS.disabledGray
     end
 end
 
--- Recomputes currentFPS every ~1s (a 1-frame FPS number jitters too much to
--- be readable), then immediately reflects both ping and fps to the UI.
--- Ping itself is looked up fresh every time too, so both are "live".
+
 local renderConn
 renderConn = RunService.RenderStepped:Connect(function(dt)
     fpsFrameCount += 1
@@ -612,15 +661,15 @@ function updateLbDisplay()
 
     if enabled.lbstats then
         local monthly, total = getLeaderboardStats()
-        monthlyLabel.Text = "Monthly Kills: " .. (monthly and formatNumberWithCommas(monthly) or "N/A")
-        totalLabel.Text = "Total Kills: " .. (total and formatNumberWithCommas(total) or "N/A")
-        monthlyLabel.TextColor3 = COLORS.white
-        totalLabel.TextColor3 = COLORS.white
+        monthlyValue.Text = monthly and formatNumberWithCommas(monthly) or "N/A"
+        totalValue.Text = total and formatNumberWithCommas(total) or "N/A"
+        monthlyValue.TextColor3 = COLORS.white
+        totalValue.TextColor3 = COLORS.white
     else
-        monthlyLabel.Text = "Monthly Kills: Disabled"
-        totalLabel.Text = "Total Kills: Disabled"
-        monthlyLabel.TextColor3 = COLORS.disabledGray
-        totalLabel.TextColor3 = COLORS.disabledGray
+        monthlyValue.Text = "Off"
+        totalValue.Text = "Off"
+        monthlyValue.TextColor3 = COLORS.disabledGray
+        totalValue.TextColor3 = COLORS.disabledGray
     end
 
     if lbToggle then
@@ -628,16 +677,11 @@ function updateLbDisplay()
     end
 end
 
--- Kills gained since sessionKillsBaseline was captured (nil until the Total
--- Kills stat has been found at least once).
+
 function updateSessionKillsDisplay()
-    if not IS_ALLOWED_GAME then
-        sessionKillsLabel.Text = "Session Kills: Disabled"
-        sessionKillsLabel.TextColor3 = COLORS.disabledGray
-        if sessionKillsToggle then
-            sessionKillsToggle.Refresh()
-        end
-        return
+
+    if sessionKillsLocked then
+        enabled.sessionkills = false
     end
 
     if enabled.sessionkills then
@@ -659,9 +703,7 @@ function updateSessionKillsDisplay()
     end
 end
 
--- Hooks .Changed on the leaderstats values so kills update the instant the
--- server changes them, instead of on a timer. Falls back to just showing
--- whatever's there if leaderstats hasn't loaded in yet.
+
 local function hookLeaderboardLiveUpdates()
     local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
     if not leaderstats then
@@ -690,11 +732,29 @@ updateSessionKillsDisplay()
 task.spawn(hookLeaderboardLiveUpdates)
 
 -- ============================================================
+-- TIMES EXECUTED DISPLAY
+-- ============================================================
+
+function updateExecutionDisplay()
+    if enabled.execution then
+        executionLabel.Text = "Times Executed: " .. formatNumberWithCommas(executionCount)
+        executionLabel.TextColor3 = COLORS.white
+    else
+        executionLabel.Text = "Times Executed: Disabled"
+        executionLabel.TextColor3 = COLORS.disabledGray
+    end
+
+    if executionToggle then
+        executionToggle.Refresh()
+    end
+end
+
+updateExecutionDisplay()
+
+-- ============================================================
 -- SESSION STOPWATCH
 -- ============================================================
--- Counts up from sessionStartTime (set on the very first line of the
--- script, before anything else runs, so there's no avoidable startup slack
--- between "script starts" and "stopwatch starts"). Format is D:HH:MM:SS.
+
 
 local function formatElapsedTime(totalSeconds)
     totalSeconds = math.max(0, math.floor(totalSeconds))
@@ -707,7 +767,7 @@ end
 
 task.spawn(function()
     while stopwatchLabel.Parent do
-        stopwatchLabel.Text = formatElapsedTime(os.clock() - sessionStartTime)
+        stopwatchLabel.Text = "Session Time: " .. formatElapsedTime(os.clock() - sessionStartTime)
         task.wait(1)
     end
 end)
@@ -721,58 +781,53 @@ local dragInput
 local dragStart
 local startPos
 
--- Keeps the settings panel glued to the right edge of the main box
--- as it gets dragged around.
-local function updateSettingsContainerPosition()
-    settingsContainer.Position = UDim2.new(
-        0, mainFrame.Position.X.Offset + mainFrame.Size.X.Offset + 16,
-        0, mainFrame.Position.Y.Offset
-    )
-end
-
-mainFrame.Active = true
-mainFrame.InputBegan:Connect(function(input)
+local function beginDrag(input)
     if dragLocked then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
-        startPos = mainFrame.Position
+        startPos = topBar.Position
 
         input.Changed:Connect(function()
             if input.UserInputState == Enum.UserInputState.End then
                 dragging = false
-                saveCurrentPrefs(mainFrame.Position, dragLocked)
+                persistPosition(topBar.Position)
             end
         end)
     end
-end)
+end
 
-mainFrame.InputChanged:Connect(function(input)
+local function trackDragInput(input)
     if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
         dragInput = input
     end
-end)
+end
+
+
+topBar.Active = true
+topBar.InputBegan:Connect(beginDrag)
+topBar.InputChanged:Connect(trackDragInput)
+
+lockButton.InputBegan:Connect(beginDrag)
+lockButton.InputChanged:Connect(trackDragInput)
 
 UserInputService.InputChanged:Connect(function(input)
     if input == dragInput and dragging then
         local delta = input.Position - dragStart
-        mainFrame.Position = UDim2.new(
+        topBar.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y
         )
-        updateSettingsContainerPosition()
     end
 end)
-
--- Places the settings panel correctly on first load, in case the main box
--- was restored to a saved (non-default) position above.
-updateSettingsContainerPosition()
 
 -- ============================================================
 -- UNLOAD
 -- ============================================================
 
 unloadButton.MouseButton1Click:Connect(function()
+    -- Save the island's current position so the next execution restores it.
+    persistPosition(topBar.Position)
     unloaded = true
     if renderConn then
         renderConn:Disconnect()
