@@ -20,7 +20,7 @@ local IS_ALLOWED_GAME = (game.PlaceId == ALLOWED_PLACE_ID)
 local COLORS = {
     background   = Color3.fromRGB(13, 17, 40),
     panel        = Color3.fromRGB(16, 21, 48),
-    accent       = Color3.fromRGB(130, 90, 255), -- purple divider accent
+    accent       = Color3.fromRGB(130, 90, 255), 
     unloadRed    = Color3.fromHex and Color3.fromHex("#dd1c1c") or Color3.fromRGB(221, 28, 28),
     disabledGray = Color3.fromRGB(140, 140, 140),
     toggleOn     = Color3.fromRGB(70, 200, 130),
@@ -162,8 +162,6 @@ end
 
 local savedPrefs = loadSavedPrefs() or {}
 
--- Restore the island's lock state from the previous execution.
--- This is independent of its saved position.
 dragLocked = savedPrefs.locked == true
 
 local executionCount = (savedPrefs.execCount or 0) + 1
@@ -190,10 +188,7 @@ screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = PlayerGui
 
--- ---------- TOP BAR (ISLAND) ----------
--- Always-visible strip showing Ping / FPS / Monthly Kills / Total Kills,
--- plus the lock and settings (gear) buttons. This replaces the old single
--- stat-heavy box; the gear button now opens a separate centered menu.
+
 
 local TOPBAR_WIDTH, TOPBAR_HEIGHT = 600, 56
 
@@ -245,22 +240,19 @@ local fpsValue     = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP),     
 local monthlyValue = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP) * 2,         105, "MONTHLY")
 local totalValue   = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP) * 3,         105, "TOTAL")
 
--- Lock button - toggles whether the top bar can be dragged. Built from plain
--- Frames (body + ring + hollow) instead of an image asset, so there's no
+
 
 local lockButton = Instance.new("TextButton")
 lockButton.Name = "LockButton"
 lockButton.BackgroundTransparency = 1
--- Nudged up 4px from the gear button's y (12) because the padlock glyph
--- inside this button's bounds sits lower than the gear image does inside
--- its own — at the same box y they read as visually misaligned.
+
 lockButton.Position = UDim2.new(0, 508, 0, 8)
 lockButton.Size = UDim2.new(0, 32, 0, 32)
 lockButton.Text = ""
 lockButton.Parent = topBar
 
-local lockColorOn = Color3.fromRGB(60, 140, 255)  -- unlocked (draggable)
-local lockColorOff = COLORS.toggleOff             -- locked (can't drag)
+local lockColorOn = Color3.fromRGB(60, 140, 255)  
+local lockColorOff = COLORS.toggleOff             
 
 local lockRing = Instance.new("Frame")
 lockRing.Name = "Ring"
@@ -338,8 +330,7 @@ lockButton.MouseButton1Click:Connect(function()
     persistPosition(topBar.Position)
 end)
 
--- Gear button - lives on the top bar (the "island"), opens the centered
--- settings menu when clicked.
+
 local gearButton = Instance.new("ImageButton")
 gearButton.Name = "GearButton"
 gearButton.BackgroundTransparency = 1
@@ -371,15 +362,15 @@ tooltipCorner.Parent = tooltip
 gearButton.MouseEnter:Connect(function() tooltip.Visible = true end)
 gearButton.MouseLeave:Connect(function() tooltip.Visible = false end)
 
--- ---------- SETTINGS MENU (centered on screen, opens from the gear) ----------
+
 
 local SETTINGS_WIDTH, SETTINGS_HEIGHT = 520, 316
 
 local settingsMenu = Instance.new("Frame")
 settingsMenu.Name = "SettingsMenu"
 settingsMenu.AnchorPoint = Vector2.new(0.5, 0.5)
-settingsMenu.Position = UDim2.new(0.5, 0, 0.5, 0) -- middle of the screen
-settingsMenu.Size = UDim2.new(0, 0, 0, 0)          -- opens via tween below
+settingsMenu.Position = UDim2.new(0.5, 0, 0.5, 0) 
+settingsMenu.Size = UDim2.new(0, 0, 0, 0)          
 settingsMenu.BackgroundColor3 = COLORS.panel
 settingsMenu.BackgroundTransparency = PANEL_TRANSPARENCY
 settingsMenu.ClipsDescendants = true
@@ -391,7 +382,6 @@ local settingsMenuCorner = Instance.new("UICorner")
 settingsMenuCorner.CornerRadius = UDim.new(0, 20)
 settingsMenuCorner.Parent = settingsMenu
 
--- Top row: session time (left) + username (right)
 local stopwatchLabel = Instance.new("TextLabel")
 stopwatchLabel.Name = "SessionStopwatch"
 stopwatchLabel.BackgroundTransparency = 1
@@ -419,7 +409,6 @@ usernameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 usernameLabel.ZIndex = 11
 usernameLabel.Parent = settingsMenu
 
--- Purple accent divider (echoes the progress-bar look from the concept)
 local divider = Instance.new("Frame")
 divider.Name = "Divider"
 divider.BackgroundColor3 = COLORS.accent
@@ -434,16 +423,15 @@ local dividerCorner = Instance.new("UICorner")
 dividerCorner.CornerRadius = UDim.new(1, 0)
 dividerCorner.Parent = divider
 
--- Left column: Session Kills + Times Executed
 local sessionKillsLabel = Instance.new("TextLabel")
 sessionKillsLabel.Name = "SessionKills"
 sessionKillsLabel.BackgroundTransparency = 1
 sessionKillsLabel.Position = UDim2.new(0, 20, 0, 62)
-sessionKillsLabel.Size = UDim2.new(0, 210, 0, 24)
+sessionKillsLabel.Size = UDim2.new(0, 240, 0, 26)
 sessionKillsLabel.Font = Enum.Font.Gotham
 sessionKillsLabel.Text = "Session Kills: --"
 sessionKillsLabel.TextColor3 = COLORS.white
-sessionKillsLabel.TextSize = 15
+sessionKillsLabel.TextSize = 17
 sessionKillsLabel.TextXAlignment = Enum.TextXAlignment.Left
 sessionKillsLabel.ZIndex = 11
 sessionKillsLabel.Parent = settingsMenu
@@ -452,35 +440,35 @@ local executionLabel = Instance.new("TextLabel")
 executionLabel.Name = "ExecutionCount"
 executionLabel.BackgroundTransparency = 1
 executionLabel.Position = UDim2.new(0, 20, 0, 92)
-executionLabel.Size = UDim2.new(0, 210, 0, 24)
+executionLabel.Size = UDim2.new(0, 240, 0, 26)
 executionLabel.Font = Enum.Font.Gotham
 executionLabel.Text = "Times Executed: " .. formatNumberWithCommas(executionCount)
 executionLabel.TextColor3 = COLORS.white
-executionLabel.TextSize = 15
+executionLabel.TextSize = 17
 executionLabel.TextXAlignment = Enum.TextXAlignment.Left
 executionLabel.ZIndex = 11
 executionLabel.Parent = settingsMenu
 
--- Right column: toggle rows (generic builder, reused for every switch)
+
 local toggles = {}
 
 local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle)
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
-    label.Position = UDim2.new(0, 330, 0, yPos)
-    label.Size = UDim2.new(0, 110, 0, 22)
+    label.Position = UDim2.new(0, 320, 0, yPos)
+    label.Size = UDim2.new(0, 110, 0, 24)
     label.Font = Enum.Font.Gotham
     label.Text = labelText
     label.TextColor3 = COLORS.white
-    label.TextSize = 14
+    label.TextSize = 16
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.ZIndex = 11
     label.Parent = settingsMenu
 
     local toggleFrame = Instance.new("Frame")
     toggleFrame.Name = name .. "Toggle"
-    toggleFrame.Position = UDim2.new(0, 456, 0, yPos - 1)
-    toggleFrame.Size = UDim2.new(0, 44, 0, 22)
+    toggleFrame.Position = UDim2.new(0, 450, 0, yPos - 1)
+    toggleFrame.Size = UDim2.new(0, 48, 0, 24)
     toggleFrame.BackgroundColor3 = enabled[stateKey] and COLORS.toggleOn or COLORS.toggleOff
     toggleFrame.BackgroundTransparency = ELEMENT_TRANSPARENCY
     toggleFrame.ZIndex = 11
@@ -492,8 +480,8 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
 
     local knob = Instance.new("Frame")
     knob.Name = "Knob"
-    knob.Size = UDim2.new(0, 18, 0, 18)
-    knob.Position = enabled[stateKey] and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
+    knob.Size = UDim2.new(0, 20, 0, 20)
+    knob.Position = enabled[stateKey] and UDim2.new(1, -22, 0, 2) or UDim2.new(0, 2, 0, 2)
     knob.BackgroundColor3 = COLORS.white
     knob.BackgroundTransparency = 0.05
     knob.ZIndex = 12
@@ -512,10 +500,7 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
 
     local toggleObj = { Frame = toggleFrame, Knob = knob, Key = stateKey, Locked = locked }
 
-    -- Locked toggles (Leaderboard / Session Kills outside the allowed game)
-    -- always render as gray + off, regardless of the underlying `enabled`
-    -- value, and never move when clicked. This is what keeps Session Kills
-    -- visually disabled instead of looking live and tappable.
+
     local function refreshVisual()
         if toggleObj.Locked then
             toggleFrame.BackgroundColor3 = COLORS.disabledGray
@@ -525,7 +510,7 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
         local on = enabled[stateKey]
         toggleFrame.BackgroundColor3 = on and COLORS.toggleOn or COLORS.toggleOff
         TweenService:Create(knob, TweenInfo.new(0.15), {
-            Position = on and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
+            Position = on and UDim2.new(1, -22, 0, 2) or UDim2.new(0, 2, 0, 2)
         }):Play()
     end
 
@@ -553,13 +538,13 @@ local executionToggle = createToggleRow("Execution", 182, "Execution", "executio
 local unloadButton = Instance.new("TextButton")
 unloadButton.Name = "UnloadButton"
 unloadButton.Position = UDim2.new(0, 20, 0, 276)
-unloadButton.Size = UDim2.new(1, -40, 0, 34)
+unloadButton.Size = UDim2.new(1, -40, 0, 36)
 unloadButton.BackgroundColor3 = COLORS.unloadRed
 unloadButton.BackgroundTransparency = ELEMENT_TRANSPARENCY
 unloadButton.Font = Enum.Font.GothamBold
 unloadButton.Text = "UNLOAD SCRIPT"
 unloadButton.TextColor3 = Color3.fromRGB(20, 0, 0)
-unloadButton.TextSize = 16
+unloadButton.TextSize = 18
 unloadButton.ZIndex = 11
 unloadButton.Parent = settingsMenu
 
@@ -577,9 +562,6 @@ local menuSizeTween
 local function setSettingsOpen(open)
     settingsOpen = open
 
-    -- Cancel whatever's still playing before starting the opposite
-    -- animation, otherwise an open/close/open in quick succession leaves two
-    -- tweens fighting over the same Size property.
     if menuSizeTween then menuSizeTween:Cancel() end
 
     if open then
@@ -826,7 +808,7 @@ end)
 -- ============================================================
 
 unloadButton.MouseButton1Click:Connect(function()
-    -- Save the island's current position so the next execution restores it.
+
     persistPosition(topBar.Position)
     unloaded = true
     if renderConn then
