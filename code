@@ -28,14 +28,6 @@ local PANEL_TRANSPARENCY   = 0.08
 local ELEMENT_TRANSPARENCY = 0.12
 local M1_DEFAULT_COLOR = Color3.fromRGB(255, 60, 60)
 local currentM1Color = M1_DEFAULT_COLOR -- overwritten below once saved prefs are loaded
-local M1_COLOR_PRESETS = {
-    Color3.fromRGB(255, 60, 60),   -- Red
-    Color3.fromRGB(255, 110, 0),   -- Orange
-    Color3.fromRGB(255, 255, 0),   -- Yellow
-    Color3.fromRGB(70, 220, 90),   -- Green
-    Color3.fromRGB(60, 140, 255),  -- Blue
-    Color3.fromRGB(190, 90, 255),  -- Purple
-}
 -- Global VFX recolor system: instead of chasing specific move/asset names,
 -- this watches for any ParticleEmitter/Trail/Beam/Light/Highlight (and
 -- optionally Decal) anywhere under the character, workspace.Live, workspace.Thrown,
@@ -233,6 +225,7 @@ local function recolorObject(obj)
         if obj:IsA("ParticleEmitter") and VFXConfig.RecolorParticles then
             cacheOriginal(obj, "Color")
             obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
+            obj:Clear() -- flush already-alive particles so the new color shows immediately
         elseif obj:IsA("Trail") and VFXConfig.RecolorTrails then
             cacheOriginal(obj, "Color")
             obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
@@ -261,6 +254,9 @@ local function restoreObject(obj)
     pcall(function()
         for prop, value in pairs(cache) do
             obj[prop] = value
+        end
+        if obj:IsA("ParticleEmitter") then
+            obj:Clear()
         end
     end)
 end
@@ -454,6 +450,22 @@ local function persistM1Color(color)
         math.floor(color.B * 255 + 0.5),
     }
     savePrefs(savedPrefs)
+end
+local function colorToHex(color)
+    return string.format("#%02X%02X%02X",
+        math.floor(color.R * 255 + 0.5),
+        math.floor(color.G * 255 + 0.5),
+        math.floor(color.B * 255 + 0.5))
+end
+local function hexToColor3(hex)
+    hex = (hex or ""):gsub("#", ""):gsub("%s+", "")
+    if #hex ~= 6 then return nil end
+    if hex:match("%X") then return nil end -- non-hex character present
+    local r = tonumber(hex:sub(1, 2), 16)
+    local g = tonumber(hex:sub(3, 4), 16)
+    local b = tonumber(hex:sub(5, 6), 16)
+    if not (r and g and b) then return nil end
+    return Color3.fromRGB(r, g, b)
 end
 local lastEmoteName = savedPrefs.lastEmoteName
 local function persistLastEmote(name)
@@ -830,51 +842,70 @@ local executionToggle = createToggleRow("Execution", 182, "Execution", "executio
 local playerCountToggle = createToggleRow("PlayerCount", 212, "Players", "playercount", false, function() updatePlayerCountDisplay() end)
 local emotesToggle = createToggleRow("Emotes", 242, "Emotes", "emotes", emoteLocked, function() updateEmoteDisplay() end)
 local m1ColorToggle = createToggleRow("M1Color", 272, "Custom VFX Color", "m1color", m1ColorLocked, function() applyM1TrailColor(enabled.m1color) end)
-local m1SwatchContainer = Instance.new("Frame")
-m1SwatchContainer.Name = "M1ColorSwatches"
-m1SwatchContainer.BackgroundTransparency = 1
-m1SwatchContainer.Position = UDim2.new(0, 330, 0, 302)
-m1SwatchContainer.Size = UDim2.new(0, 190, 0, 24)
-m1SwatchContainer.ZIndex = 11
-m1SwatchContainer.Visible = not m1ColorLocked
-m1SwatchContainer.Parent = settingsMenu
-local m1SwatchLayout = Instance.new("UIListLayout")
-m1SwatchLayout.FillDirection = Enum.FillDirection.Horizontal
-m1SwatchLayout.Padding = UDim.new(0, 6)
-m1SwatchLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-m1SwatchLayout.Parent = m1SwatchContainer
-local m1SwatchButtons = {}
-local function refreshM1SwatchSelection()
-    for _, entry in ipairs(m1SwatchButtons) do
-        entry.stroke.Transparency = (entry.color == currentM1Color) and 0 or 1
-    end
-end
-for _, presetColor in ipairs(M1_COLOR_PRESETS) do
-    local swatch = Instance.new("TextButton")
-    swatch.Name = "Swatch"
-    swatch.Text = ""
-    swatch.Size = UDim2.new(0, 24, 0, 24)
-    swatch.BackgroundColor3 = presetColor
-    swatch.ZIndex = 11
-    swatch.Parent = m1SwatchContainer
-    local swatchCorner = Instance.new("UICorner")
-    swatchCorner.CornerRadius = UDim.new(0, 6)
-    swatchCorner.Parent = swatch
-    local swatchStroke = Instance.new("UIStroke")
-    swatchStroke.Thickness = 2
-    swatchStroke.Color = COLORS.white
-    swatchStroke.Transparency = (presetColor == currentM1Color) and 0 or 1
-    swatchStroke.Parent = swatch
-    table.insert(m1SwatchButtons, { button = swatch, color = presetColor, stroke = swatchStroke })
-    swatch.MouseButton1Click:Connect(function()
-        currentM1Color = presetColor
+local m1SwatchExpanded = false
+local m1ExpandButton = Instance.new("TextButton")
+m1ExpandButton.Name = "M1ColorExpandButton"
+m1ExpandButton.Position = UDim2.new(0, 300, 0, 272)
+m1ExpandButton.Size = UDim2.new(0, 22, 0, 22)
+m1ExpandButton.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+m1ExpandButton.AutoButtonColor = false
+m1ExpandButton.Font = Enum.Font.GothamBold
+m1ExpandButton.Text = ">"
+m1ExpandButton.TextColor3 = COLORS.white
+m1ExpandButton.TextSize = 14
+m1ExpandButton.ZIndex = 11
+m1ExpandButton.Visible = not m1ColorLocked
+m1ExpandButton.Parent = settingsMenu
+local m1ExpandButtonCorner = Instance.new("UICorner")
+m1ExpandButtonCorner.CornerRadius = UDim.new(0, 6)
+m1ExpandButtonCorner.Parent = m1ExpandButton
+local m1HexBox = Instance.new("TextBox")
+m1HexBox.Name = "M1ColorHexBox"
+m1HexBox.AnchorPoint = Vector2.new(1, 0)
+m1HexBox.Position = UDim2.new(0, 294, 0, 272)
+m1HexBox.Size = UDim2.new(0, 120, 0, 22)
+m1HexBox.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+m1HexBox.BorderSizePixel = 0
+m1HexBox.ClearTextOnFocus = false
+m1HexBox.Font = Enum.Font.Gotham
+m1HexBox.PlaceholderText = "#RRGGBB"
+m1HexBox.PlaceholderColor3 = COLORS.disabledGray
+m1HexBox.Text = colorToHex(currentM1Color)
+m1HexBox.TextColor3 = COLORS.white
+m1HexBox.TextSize = 14
+m1HexBox.ZIndex = 11
+m1HexBox.Visible = false
+m1HexBox.Parent = settingsMenu
+local m1HexBoxCorner = Instance.new("UICorner")
+m1HexBoxCorner.CornerRadius = UDim.new(0, 6)
+m1HexBoxCorner.Parent = m1HexBox
+local m1HexBoxStroke = Instance.new("UIStroke")
+m1HexBoxStroke.Thickness = 1
+m1HexBoxStroke.Color = COLORS.white
+m1HexBoxStroke.Transparency = 0.7
+m1HexBoxStroke.Parent = m1HexBox
+m1HexBox.FocusLost:Connect(function()
+    local parsed = hexToColor3(m1HexBox.Text)
+    if parsed then
+        currentM1Color = parsed
         persistM1Color(currentM1Color)
-        refreshM1SwatchSelection()
+        m1HexBoxStroke.Color = COLORS.white
+        m1HexBoxStroke.Transparency = 0.7
         if enabled.m1color then
             applyM1TrailColor(true)
         end
-    end)
-end
+    else
+        m1HexBoxStroke.Color = COLORS.unloadRed
+        m1HexBoxStroke.Transparency = 0
+    end
+    m1HexBox.Text = colorToHex(currentM1Color)
+end)
+m1ExpandButton.MouseButton1Click:Connect(function()
+    if m1ColorLocked then return end
+    m1SwatchExpanded = not m1SwatchExpanded
+    m1HexBox.Visible = m1SwatchExpanded
+    m1ExpandButton.Text = m1SwatchExpanded and "<" or ">"
+end)
 applyM1TrailColor(enabled.m1color)
 local versionLabel = Instance.new("TextLabel")
 versionLabel.Name = "VersionLabel"
@@ -882,7 +913,7 @@ versionLabel.BackgroundTransparency = 1
 versionLabel.Position = UDim2.new(0, 20, 0, 332)
 versionLabel.Size = UDim2.new(0, 120, 0, 16)
 versionLabel.Font = Enum.Font.Gotham
-versionLabel.Text = "Version 2.12"
+versionLabel.Text = "Version 2.13"
 versionLabel.TextColor3 = COLORS.disabledGray
 versionLabel.TextSize = 12
 versionLabel.TextXAlignment = Enum.TextXAlignment.Left
