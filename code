@@ -1,3 +1,8 @@
+local GLOBAL_ENV = (getgenv and getgenv()) or _G
+if GLOBAL_ENV.__PingFpsUI_AutoCleanup then
+    pcall(GLOBAL_ENV.__PingFpsUI_AutoCleanup)
+end
+
 local sessionStartTime = os.clock()
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -21,6 +26,82 @@ local COLORS = {
 }
 local PANEL_TRANSPARENCY   = 0.08
 local ELEMENT_TRANSPARENCY = 0.12
+local M1_DEFAULT_COLOR = Color3.fromRGB(255, 60, 60)
+local currentM1Color = M1_DEFAULT_COLOR -- overwritten below once saved prefs are loaded
+local M1_COLOR_PRESETS = {
+    Color3.fromRGB(255, 60, 60),   -- Red
+    Color3.fromRGB(255, 110, 0),   -- Orange
+    Color3.fromRGB(255, 255, 0),   -- Yellow
+    Color3.fromRGB(70, 220, 90),   -- Green
+    Color3.fromRGB(60, 140, 255),  -- Blue
+    Color3.fromRGB(190, 90, 255),  -- Purple
+}
+-- Global VFX recolor system: instead of chasing specific move/asset names,
+-- this watches for any ParticleEmitter/Trail/Beam/Light/Highlight (and
+-- optionally Decal) anywhere under the character, workspace.Live, workspace.Thrown,
+-- and ReplicatedStorage.Resources, and retints them toward TargetColor while
+-- preserving brightness and leaving true grayscale (white/black/gray) alone.
+local VFXConfig = {
+    Enabled = false, -- driven by the "Suiryu m1 Color" toggle
+    TargetColor = currentM1Color,
+    Mode = "Accent", -- "Accent" preserves grayscale, "Full" recolors everything
+    PreserveGrayscale = true,
+    GrayscaleSaturationThreshold = 0.15,
+    RecolorParticles = true,
+    RecolorTrails = true,
+    RecolorBeams = true,
+    RecolorLights = true,
+    RecolorHighlights = true,
+    RecolorDecals = false, -- decals are often actual artwork/textures, opt-in only
+}
+-- Some effects are made up mostly/entirely of Decals (ring flashes, etc). Rather
+-- than flipping RecolorDecals on globally (which would also recolor things like
+-- your character's face decal), name specific effect containers here to opt
+-- their descendant Decals into recoloring even while the global default stays off.
+local VFX_DECAL_ALLOWLIST = {
+    -- Effects that are allowed to recolor descendant Decals even when
+    -- the global RecolorDecals setting remains disabled.
+    KickShockwave = true,
+    ["Right Arm"] = true,
+    Last = true,
+    Cone = true,
+    ["Left Leg"] = true,
+    ["Right Leg"] = true,
+    ["Left Arm"] = true,
+    Long = true,
+    Shock = true,
+    idk = true,
+    NewPurp = true,
+    Pls = true,
+    Beam = true,
+    Dragons = true,
+    ShardSphere = true,
+    Bigg = true,
+    Impact2 = true,
+    Slashes = true,
+    Pre = true,
+    Tornado2 = true,
+    FinalExplosion = true,
+    Up = true,
+    Proj = true,
+    TParticles2 = true,
+    NadoSmoke = true,
+    Dotted = true,
+    Torn = true,
+    Torn2 = true,
+    Bottoms2 = true,
+}
+local function isInDecalAllowlist(obj)
+    local ancestor = obj.Parent
+    while ancestor do
+        if VFX_DECAL_ALLOWLIST[ancestor.Name] then
+            return true
+        end
+        ancestor = ancestor.Parent
+    end
+    return false
+end
+local VFX_WATCH_ROOT_NAMES = { "Live", "Thrown" }
 local EMOTE_KILL_INTERVAL = 50
 local LIMITED_EMOTE_NAMES = {
     ["Boundless Rage"]     = true,
@@ -53,10 +134,12 @@ local enabled = {
     execution = true,
     playercount = true, 
     emotes = IS_ALLOWED_GAME, 
+    m1color = false,
 }
 local lbLocked = not IS_ALLOWED_GAME
 local sessionKillsLocked = not IS_ALLOWED_GAME
 local emoteLocked = not IS_ALLOWED_GAME
+local m1ColorLocked = not IS_ALLOWED_GAME
 local dragLocked = false 
 local currentFPS = 60
 local fpsFrameCount = 0
@@ -110,6 +193,149 @@ end
 local function getPlayerCount()
     return #Players:GetPlayers()
 end
+local cachedOriginalProps = setmetatable({}, { __mode = "k" }) -- weak keys so destroyed VFX instances get GC'd
+local vfxWatchConnections = {}
+
+local function cacheOriginal(obj, prop)
+    cachedOriginalProps[obj] = cachedOriginalProps[obj] or {}
+    if cachedOriginalProps[obj][prop] == nil then
+        cachedOriginalProps[obj][prop] = obj[prop]
+    end
+end
+
+local function isGrayscale(color)
+    local _, s, _ = color:ToHSV()
+    return s < VFXConfig.GrayscaleSaturationThreshold
+end
+
+local function transformColor(color)
+    if VFXConfig.Mode == "Full" then
+        return VFXConfig.TargetColor
+    end
+    if VFXConfig.PreserveGrayscale and isGrayscale(color) then
+        return color
+    end
+    local targetH, targetS, _ = VFXConfig.TargetColor:ToHSV()
+    local _, _, v = color:ToHSV()
+    return Color3.fromHSV(targetH, targetS, v)
+end
+
+local function transformColorSequence(sequence)
+    local newKeypoints = {}
+    for _, kp in ipairs(sequence.Keypoints) do
+        table.insert(newKeypoints, ColorSequenceKeypoint.new(kp.Time, transformColor(kp.Value)))
+    end
+    return ColorSequence.new(newKeypoints)
+end
+
+local function recolorObject(obj)
+    local ok = pcall(function()
+        if obj:IsA("ParticleEmitter") and VFXConfig.RecolorParticles then
+            cacheOriginal(obj, "Color")
+            obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
+        elseif obj:IsA("Trail") and VFXConfig.RecolorTrails then
+            cacheOriginal(obj, "Color")
+            obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
+        elseif obj:IsA("Beam") and VFXConfig.RecolorBeams then
+            cacheOriginal(obj, "Color")
+            obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
+        elseif (obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight")) and VFXConfig.RecolorLights then
+            cacheOriginal(obj, "Color")
+            obj.Color = transformColor(cachedOriginalProps[obj].Color)
+        elseif obj:IsA("Highlight") and VFXConfig.RecolorHighlights then
+            cacheOriginal(obj, "FillColor")
+            cacheOriginal(obj, "OutlineColor")
+            obj.FillColor = transformColor(cachedOriginalProps[obj].FillColor)
+            obj.OutlineColor = transformColor(cachedOriginalProps[obj].OutlineColor)
+        elseif obj:IsA("Decal") and (VFXConfig.RecolorDecals or isInDecalAllowlist(obj)) then
+            cacheOriginal(obj, "Color3")
+            obj.Color3 = transformColor(cachedOriginalProps[obj].Color3)
+        end
+    end)
+    return ok
+end
+
+local function restoreObject(obj)
+    local cache = cachedOriginalProps[obj]
+    if not cache then return end
+    pcall(function()
+        for prop, value in pairs(cache) do
+            obj[prop] = value
+        end
+    end)
+end
+
+local function scanAndWatch(root)
+    for _, obj in ipairs(root:GetDescendants()) do
+        recolorObject(obj)
+    end
+    table.insert(vfxWatchConnections, root.DescendantAdded:Connect(function(obj)
+        if VFXConfig.Enabled then
+            recolorObject(obj)
+        end
+    end))
+end
+
+local function getVFXWatchRoots()
+    local roots = {}
+    if LocalPlayer.Character then
+        table.insert(roots, LocalPlayer.Character)
+    end
+    for _, name in ipairs(VFX_WATCH_ROOT_NAMES) do
+        local folder = workspace:FindFirstChild(name)
+        if folder then
+            table.insert(roots, folder)
+        end
+    end
+    local ok, resources = pcall(function()
+        return game.ReplicatedStorage.Resources
+    end)
+    if ok and resources then
+        table.insert(roots, resources)
+    end
+    return roots
+end
+
+local function startVFXWatcher()
+    for _, conn in ipairs(vfxWatchConnections) do
+        conn:Disconnect()
+    end
+    vfxWatchConnections = {}
+    for _, root in ipairs(getVFXWatchRoots()) do
+        scanAndWatch(root)
+    end
+end
+
+local function stopVFXWatcher(restoreAll)
+    for _, conn in ipairs(vfxWatchConnections) do
+        conn:Disconnect()
+    end
+    vfxWatchConnections = {}
+    if restoreAll then
+        for obj in pairs(cachedOriginalProps) do
+            if obj and obj.Parent then
+                restoreObject(obj)
+            end
+        end
+    end
+end
+
+local function applyM1TrailColor(useCustom)
+    VFXConfig.Enabled = useCustom
+    VFXConfig.TargetColor = currentM1Color
+    if useCustom then
+        startVFXWatcher()
+    else
+        stopVFXWatcher(true)
+    end
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    if VFXConfig.Enabled then
+        task.wait(0.5) -- let the character's VFX instances populate first
+        startVFXWatcher()
+    end
+end)
 local cachedEmotesTable = nil 
 local function getAllEmotesTable()
     if cachedEmotesTable then return cachedEmotesTable end
@@ -215,6 +441,18 @@ end
 local function persistToggleState(stateKey)
     savedPrefs.toggles = savedPrefs.toggles or {}
     savedPrefs.toggles[stateKey] = enabled[stateKey]
+    savePrefs(savedPrefs)
+end
+if savedPrefs.m1Color then
+    local c = savedPrefs.m1Color
+    currentM1Color = Color3.fromRGB(c[1], c[2], c[3])
+end
+local function persistM1Color(color)
+    savedPrefs.m1Color = {
+        math.floor(color.R * 255 + 0.5),
+        math.floor(color.G * 255 + 0.5),
+        math.floor(color.B * 255 + 0.5),
+    }
     savePrefs(savedPrefs)
 end
 local lastEmoteName = savedPrefs.lastEmoteName
@@ -371,7 +609,7 @@ tooltipCorner.CornerRadius = UDim.new(0, 6)
 tooltipCorner.Parent = tooltip
 gearButton.MouseEnter:Connect(function() tooltip.Visible = true end)
 gearButton.MouseLeave:Connect(function() tooltip.Visible = false end)
-local SETTINGS_WIDTH, SETTINGS_HEIGHT = 520, 316
+local SETTINGS_WIDTH, SETTINGS_HEIGHT = 540, 400
 local SETTINGS_GAP = 8 
 local settingsMenu = Instance.new("Frame")
 settingsMenu.Name = "SettingsMenu"
@@ -508,13 +746,14 @@ local lastEmoteLabel = Instance.new("TextLabel")
 lastEmoteLabel.Name = "LastEmote"
 lastEmoteLabel.BackgroundTransparency = 1
 lastEmoteLabel.Position = UDim2.new(0, 20, 0, 212)
-lastEmoteLabel.Size = UDim2.new(0, 210, 0, 24)
+lastEmoteLabel.Size = UDim2.new(0, 300, 0, 40)
 lastEmoteLabel.Font = Enum.Font.Gotham
 lastEmoteLabel.Text = "Last Emote: --"
 lastEmoteLabel.TextColor3 = COLORS.white
 lastEmoteLabel.TextSize = 15
 lastEmoteLabel.TextXAlignment = Enum.TextXAlignment.Left
-lastEmoteLabel.TextTruncate = Enum.TextTruncate.AtEnd
+lastEmoteLabel.TextYAlignment = Enum.TextYAlignment.Top
+lastEmoteLabel.TextWrapped = true
 lastEmoteLabel.ZIndex = 11
 lastEmoteLabel.Parent = settingsMenu
 local toggles = {}
@@ -522,7 +761,7 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
     label.Position = UDim2.new(0, 330, 0, yPos)
-    label.Size = UDim2.new(0, 110, 0, 22)
+    label.Size = UDim2.new(0, 130, 0, 22)
     label.Font = Enum.Font.Gotham
     label.Text = labelText
     label.TextColor3 = COLORS.white
@@ -532,7 +771,7 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
     label.Parent = settingsMenu
     local toggleFrame = Instance.new("Frame")
     toggleFrame.Name = name .. "Toggle"
-    toggleFrame.Position = UDim2.new(0, 456, 0, yPos - 1)
+    toggleFrame.Position = UDim2.new(0, 476, 0, yPos - 1)
     toggleFrame.Size = UDim2.new(0, 44, 0, 22)
     toggleFrame.BackgroundColor3 = enabled[stateKey] and COLORS.toggleOn or COLORS.toggleOff
     toggleFrame.BackgroundTransparency = ELEMENT_TRANSPARENCY
@@ -590,13 +829,60 @@ local sessionKillsToggle = createToggleRow("SessionKills", 152, "Session Kills",
 local executionToggle = createToggleRow("Execution", 182, "Execution", "execution", false, function() updateExecutionDisplay() end)
 local playerCountToggle = createToggleRow("PlayerCount", 212, "Players", "playercount", false, function() updatePlayerCountDisplay() end)
 local emotesToggle = createToggleRow("Emotes", 242, "Emotes", "emotes", emoteLocked, function() updateEmoteDisplay() end)
+local m1ColorToggle = createToggleRow("M1Color", 272, "Custom VFX Color", "m1color", m1ColorLocked, function() applyM1TrailColor(enabled.m1color) end)
+local m1SwatchContainer = Instance.new("Frame")
+m1SwatchContainer.Name = "M1ColorSwatches"
+m1SwatchContainer.BackgroundTransparency = 1
+m1SwatchContainer.Position = UDim2.new(0, 330, 0, 302)
+m1SwatchContainer.Size = UDim2.new(0, 190, 0, 24)
+m1SwatchContainer.ZIndex = 11
+m1SwatchContainer.Visible = not m1ColorLocked
+m1SwatchContainer.Parent = settingsMenu
+local m1SwatchLayout = Instance.new("UIListLayout")
+m1SwatchLayout.FillDirection = Enum.FillDirection.Horizontal
+m1SwatchLayout.Padding = UDim.new(0, 6)
+m1SwatchLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+m1SwatchLayout.Parent = m1SwatchContainer
+local m1SwatchButtons = {}
+local function refreshM1SwatchSelection()
+    for _, entry in ipairs(m1SwatchButtons) do
+        entry.stroke.Transparency = (entry.color == currentM1Color) and 0 or 1
+    end
+end
+for _, presetColor in ipairs(M1_COLOR_PRESETS) do
+    local swatch = Instance.new("TextButton")
+    swatch.Name = "Swatch"
+    swatch.Text = ""
+    swatch.Size = UDim2.new(0, 24, 0, 24)
+    swatch.BackgroundColor3 = presetColor
+    swatch.ZIndex = 11
+    swatch.Parent = m1SwatchContainer
+    local swatchCorner = Instance.new("UICorner")
+    swatchCorner.CornerRadius = UDim.new(0, 6)
+    swatchCorner.Parent = swatch
+    local swatchStroke = Instance.new("UIStroke")
+    swatchStroke.Thickness = 2
+    swatchStroke.Color = COLORS.white
+    swatchStroke.Transparency = (presetColor == currentM1Color) and 0 or 1
+    swatchStroke.Parent = swatch
+    table.insert(m1SwatchButtons, { button = swatch, color = presetColor, stroke = swatchStroke })
+    swatch.MouseButton1Click:Connect(function()
+        currentM1Color = presetColor
+        persistM1Color(currentM1Color)
+        refreshM1SwatchSelection()
+        if enabled.m1color then
+            applyM1TrailColor(true)
+        end
+    end)
+end
+applyM1TrailColor(enabled.m1color)
 local versionLabel = Instance.new("TextLabel")
 versionLabel.Name = "VersionLabel"
 versionLabel.BackgroundTransparency = 1
-versionLabel.Position = UDim2.new(0, 20, 0, 258)
+versionLabel.Position = UDim2.new(0, 20, 0, 332)
 versionLabel.Size = UDim2.new(0, 120, 0, 16)
 versionLabel.Font = Enum.Font.Gotham
-versionLabel.Text = "Version 2.07"
+versionLabel.Text = "Version 2.12"
 versionLabel.TextColor3 = COLORS.disabledGray
 versionLabel.TextSize = 12
 versionLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -604,7 +890,7 @@ versionLabel.ZIndex = 11
 versionLabel.Parent = settingsMenu
 local unloadButton = Instance.new("TextButton")
 unloadButton.Name = "UnloadButton"
-unloadButton.Position = UDim2.new(0, 20, 0, 276)
+unloadButton.Position = UDim2.new(0, 20, 0, 350)
 unloadButton.Size = UDim2.new(1, -40, 0, 34)
 unloadButton.BackgroundColor3 = COLORS.unloadRed
 unloadButton.BackgroundTransparency = ELEMENT_TRANSPARENCY
@@ -848,6 +1134,7 @@ local dragging = false
 local dragInput
 local dragStart
 local startPos
+local dragConnections = {}
 local function beginDrag(input)
     if dragLocked then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -868,11 +1155,11 @@ local function trackDragInput(input)
     end
 end
 topBar.Active = true
-topBar.InputBegan:Connect(beginDrag)
-topBar.InputChanged:Connect(trackDragInput)
-lockButton.InputBegan:Connect(beginDrag)
-lockButton.InputChanged:Connect(trackDragInput)
-UserInputService.InputChanged:Connect(function(input)
+table.insert(dragConnections, topBar.InputBegan:Connect(beginDrag))
+table.insert(dragConnections, topBar.InputChanged:Connect(trackDragInput))
+table.insert(dragConnections, lockButton.InputBegan:Connect(beginDrag))
+table.insert(dragConnections, lockButton.InputChanged:Connect(trackDragInput))
+table.insert(dragConnections, UserInputService.InputChanged:Connect(function(input)
     if input == dragInput and dragging then
         local delta = input.Position - dragStart
         topBar.Position = UDim2.new(
@@ -883,21 +1170,72 @@ UserInputService.InputChanged:Connect(function(input)
             syncSettingsMenuPosition()
         end
     end
-end)
-unloadButton.MouseButton1Click:Connect(function()
-    persistPosition(topBar.Position)
+end))
+-- Central cleanup used by the Unload button and by automatic re-execution cleanup.
+local function cleanupScript()
+    if unloaded then
+        return
+    end
+
     unloaded = true
+
+    pcall(function()
+        if topBar and topBar.Parent then
+            persistPosition(topBar.Position)
+        end
+    end)
+
+    -- Restore original VFX colors and stop the watcher.
+    pcall(function()
+        applyM1TrailColor(false)
+    end)
+
     if renderConn then
-        renderConn:Disconnect()
+        pcall(function() renderConn:Disconnect() end)
+        renderConn = nil
     end
+
     for _, conn in ipairs(lbConnections) do
-        conn:Disconnect()
+        pcall(function() conn:Disconnect() end)
     end
+    table.clear(lbConnections)
+
     for _, conn in ipairs(playerCountConnections) do
-        conn:Disconnect()
+        pcall(function() conn:Disconnect() end)
     end
+    table.clear(playerCountConnections)
+
     for _, conn in ipairs(emoteConnections) do
-        conn:Disconnect()
+        pcall(function() conn:Disconnect() end)
     end
-    screenGui:Destroy()
+    table.clear(emoteConnections)
+
+    for _, conn in ipairs(vfxWatchConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(vfxWatchConnections)
+
+    for _, conn in ipairs(dragConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(dragConnections)
+
+    if menuSizeTween then
+        pcall(function() menuSizeTween:Cancel() end)
+        menuSizeTween = nil
+    end
+
+    if screenGui and screenGui.Parent then
+        screenGui:Destroy()
+    end
+end
+
+GLOBAL_ENV.__PingFpsUI_AutoCleanup = cleanupScript
+
+unloadButton.MouseButton1Click:Connect(function()
+    cleanupScript()
+
+    if GLOBAL_ENV.__PingFpsUI_AutoCleanup == cleanupScript then
+        GLOBAL_ENV.__PingFpsUI_AutoCleanup = nil
+    end
 end)
