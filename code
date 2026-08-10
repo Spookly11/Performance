@@ -20,7 +20,7 @@ local IS_ALLOWED_GAME = (game.PlaceId == ALLOWED_PLACE_ID)
 local COLORS = {
     background   = Color3.fromRGB(13, 17, 40),
     panel        = Color3.fromRGB(16, 21, 48),
-    accent       = Color3.fromRGB(130, 90, 255), 
+    accent       = Color3.fromRGB(130, 90, 255), -- purple divider accent
     unloadRed    = Color3.fromHex and Color3.fromHex("#dd1c1c") or Color3.fromRGB(221, 28, 28),
     disabledGray = Color3.fromRGB(140, 140, 140),
     toggleOn     = Color3.fromRGB(70, 200, 130),
@@ -30,6 +30,42 @@ local COLORS = {
 
 local PANEL_TRANSPARENCY   = 0.08
 local ELEMENT_TRANSPARENCY = 0.12
+
+-- Kills needed between emote unlocks (matches the game's own Spin-label math:
+-- TotalKillsFrb - LastEmoteSpin, reset every 50 kills).
+local EMOTE_KILL_INTERVAL = 50
+
+-- Limited/paid emotes - excluded from the "Emotes: X/Y" total since they
+-- aren't obtainable through normal kill-based progression.
+local LIMITED_EMOTE_NAMES = {
+    ["Boundless Rage"]     = true,
+    ["Final Stand"]        = true,
+    ["Eternal Seal"]       = true,
+    ["The Strongest"]      = true,
+    ["The Fallen"]         = true,
+    ["Final Spark"]        = true,
+    ["Divine Form"]        = true,
+    ["My Brother"]         = true,
+    ["Shadow Eruption"]    = true,
+    ["Emerge"]             = true,
+    ["Inner Rage"]         = true,
+    ["Last Will"]          = true,
+    ["True Aura"]          = true,
+    ["Wombo Combo"]        = true,
+    ["Lifeform"]           = true,
+    ["Pocket Dimension"]   = true,
+    ["Lifetime Barrage"]   = true,
+    ["Lightning Blitz"]    = true,
+    ["Beast Form"]         = true,
+    ["Speedster"]          = true,
+    -- NOTE: none of the 20 names above were found in
+    -- ReplicatedStorage.Emotes:GetTable() (562-key dump, Aug 2026).
+    -- "The Strongest Rocks" was a false-positive substring match on
+    -- "The Strongest" - it's a regular emote, not the limited one, and
+    -- has been left out here. The limited items are likely tracked in a
+    -- separate module this table doesn't expose - these entries are
+    -- no-ops until that source is found.
+}
 
 -- ============================================================
 -- STATE
@@ -43,11 +79,14 @@ local enabled = {
     lbstats = IS_ALLOWED_GAME,      
     sessionkills = IS_ALLOWED_GAME,
     execution = true,
+    playercount = true, -- not gated by IS_ALLOWED_GAME; player count works in any game
+    emotes = IS_ALLOWED_GAME, -- depends on this game's Emotes module/attributes, so it's locked like lbstats/sessionkills
 }
 
 
 local lbLocked = not IS_ALLOWED_GAME
 local sessionKillsLocked = not IS_ALLOWED_GAME
+local emoteLocked = not IS_ALLOWED_GAME
 local dragLocked = false -- when true, the UI can't be dragged; set from saved prefs below
 
 local currentFPS = 60
@@ -117,6 +156,79 @@ local function getLeaderboardStats()
     return monthly, total
 end
 
+local function getPlayerCount()
+    return #Players:GetPlayers()
+end
+
+-- ---------- Emote progress helpers ----------
+-- Mirrors the game's own Spin-label logic (found in the game's client
+-- scripts): kills since the last emote = TotalKillsFrb - LastEmoteSpin,
+-- and a new emote unlocks every EMOTE_KILL_INTERVAL (50) kills.
+
+local cachedEmotesTable = nil -- caches require(ReplicatedStorage.Emotes):GetTable()
+
+local function getAllEmotesTable()
+    if cachedEmotesTable then return cachedEmotesTable end
+    local ok, result = pcall(function()
+        local emotesModule = game.ReplicatedStorage:FindFirstChild("Emotes")
+        return emotesModule and require(emotesModule):GetTable()
+    end)
+    if ok and result then
+        cachedEmotesTable = result
+        return result
+    end
+    return nil
+end
+
+-- Shared name resolution for a raw GetTable() entry - used both for display
+-- and for matching against LIMITED_EMOTE_NAMES. The exact schema isn't
+-- confirmed (see the debug dump below to nail it down for real).
+local function resolveEntryName(key, entry)
+    if type(entry) == "table" then
+        return entry.Name or entry.DisplayName or entry.name or tostring(key)
+    elseif type(entry) == "string" then
+        return entry
+    end
+    return tostring(key)
+end
+
+-- Total obtainable emotes: every catalog entry whose resolved name isn't in
+-- LIMITED_EMOTE_NAMES.
+local function countObtainableEmotes(t)
+    if not t then return 0 end
+    local count = 0
+    for key, entry in pairs(t) do
+        if not LIMITED_EMOTE_NAMES[resolveEntryName(key, entry)] then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function getOwnedEmoteIds()
+    local ok, result = pcall(function()
+        return HttpService:JSONDecode(LocalPlayer:GetAttribute("Emotes") or "[]")
+    end)
+    if ok and result then return result end
+    return {}
+end
+
+local function getKillsUntilNextEmote()
+    local totalKills = LocalPlayer:GetAttribute("TotalKillsFrb") or 0
+    local lastSpin = LocalPlayer:GetAttribute("LastEmoteSpin") or -100
+    local sinceLast = totalKills - lastSpin
+    return math.max(0, EMOTE_KILL_INTERVAL - sinceLast)
+end
+
+-- Best-effort display name for an emote id/key - the exact schema of
+-- GetTable()'s entries isn't guaranteed, so this falls back to the raw
+-- key if no readable name field is found.
+local function getEmoteDisplayName(emoteKey)
+    local allEmotes = getAllEmotesTable()
+    local entry = allEmotes and allEmotes[emoteKey]
+    return resolveEntryName(emoteKey, entry)
+end
+
 local function getUsername()
     if LocalPlayer.DisplayName and LocalPlayer.DisplayName ~= LocalPlayer.Name then
         return LocalPlayer.DisplayName .. " (@" .. LocalPlayer.Name .. ")"
@@ -162,12 +274,26 @@ end
 
 local savedPrefs = loadSavedPrefs() or {}
 
+-- Restore the island's lock state from the previous execution.
+-- This is independent of its saved position.
 dragLocked = savedPrefs.locked == true
 
 local executionCount = (savedPrefs.execCount or 0) + 1
 savedPrefs.execCount = executionCount
 savedPrefs.locked = dragLocked
 savePrefs(savedPrefs)
+
+-- Restore toggle states (Ping/FPS/Leaderboard/Session Kills/Execution/Players)
+-- from the previous execution. Locked toggles (Leaderboard/Session Kills
+-- outside the allowed game) still get forced off at runtime by their
+-- update functions below regardless of what's restored here.
+if savedPrefs.toggles then
+    for key, value in pairs(savedPrefs.toggles) do
+        if enabled[key] ~= nil then
+            enabled[key] = value
+        end
+    end
+end
 
 local function persistPosition(pos)
     savedPrefs.x = pos.X.Offset
@@ -176,11 +302,26 @@ local function persistPosition(pos)
     savePrefs(savedPrefs)
 end
 
+local function persistToggleState(stateKey)
+    savedPrefs.toggles = savedPrefs.toggles or {}
+    savedPrefs.toggles[stateKey] = enabled[stateKey]
+    savePrefs(savedPrefs)
+end
+
+-- Last emote received, remembered across executions the same way position/
+-- toggles are. Updated live below whenever the player's Emotes list grows.
+local lastEmoteName = savedPrefs.lastEmoteName
+
+local function persistLastEmote(name)
+    savedPrefs.lastEmoteName = name
+    savePrefs(savedPrefs)
+end
+
 -- ============================================================
 -- BUILD UI
 -- ============================================================
 
-local updatePingDisplay, updateFpsDisplay, updateLbDisplay, updateSessionKillsDisplay, updateExecutionDisplay
+local updatePingDisplay, updateFpsDisplay, updateLbDisplay, updateSessionKillsDisplay, updateExecutionDisplay, updatePlayerCountDisplay, updateEmoteDisplay
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "PingFpsUI"
@@ -188,7 +329,10 @@ screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = PlayerGui
 
-
+-- ---------- TOP BAR (ISLAND) ----------
+-- Always-visible strip showing Ping / FPS / Monthly Kills / Total Kills,
+-- plus the lock and settings (gear) buttons. This replaces the old single
+-- stat-heavy box; the gear button now opens a separate centered menu.
 
 local TOPBAR_WIDTH, TOPBAR_HEIGHT = 600, 56
 
@@ -240,19 +384,22 @@ local fpsValue     = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP),     
 local monthlyValue = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP) * 2,         105, "MONTHLY")
 local totalValue   = createStatCell(20 + (STAT_CELL_WIDTH + STAT_CELL_GAP) * 3,         105, "TOTAL")
 
-
+-- Lock button - toggles whether the top bar can be dragged. Built from plain
+-- Frames (body + ring + hollow) instead of an image asset, so there's no
 
 local lockButton = Instance.new("TextButton")
 lockButton.Name = "LockButton"
 lockButton.BackgroundTransparency = 1
-
+-- Nudged up 4px from the gear button's y (12) because the padlock glyph
+-- inside this button's bounds sits lower than the gear image does inside
+-- its own — at the same box y they read as visually misaligned.
 lockButton.Position = UDim2.new(0, 508, 0, 8)
 lockButton.Size = UDim2.new(0, 32, 0, 32)
 lockButton.Text = ""
 lockButton.Parent = topBar
 
-local lockColorOn = Color3.fromRGB(60, 140, 255)  
-local lockColorOff = COLORS.toggleOff             
+local lockColorOn = Color3.fromRGB(60, 140, 255)  -- unlocked (draggable)
+local lockColorOff = COLORS.toggleOff             -- locked (can't drag)
 
 local lockRing = Instance.new("Frame")
 lockRing.Name = "Ring"
@@ -330,7 +477,8 @@ lockButton.MouseButton1Click:Connect(function()
     persistPosition(topBar.Position)
 end)
 
-
+-- Gear button - lives on the top bar (the "island"), opens the centered
+-- settings menu when clicked.
 local gearButton = Instance.new("ImageButton")
 gearButton.Name = "GearButton"
 gearButton.BackgroundTransparency = 1
@@ -362,15 +510,16 @@ tooltipCorner.Parent = tooltip
 gearButton.MouseEnter:Connect(function() tooltip.Visible = true end)
 gearButton.MouseLeave:Connect(function() tooltip.Visible = false end)
 
-
+-- ---------- SETTINGS MENU (centered on screen, opens from the gear) ----------
 
 local SETTINGS_WIDTH, SETTINGS_HEIGHT = 520, 316
+local SETTINGS_GAP = 8 -- vertical gap between the bottom of the top bar and the panel
 
 local settingsMenu = Instance.new("Frame")
 settingsMenu.Name = "SettingsMenu"
-settingsMenu.AnchorPoint = Vector2.new(0.5, 0.5)
-settingsMenu.Position = UDim2.new(0.5, 0, 0.5, 0) 
-settingsMenu.Size = UDim2.new(0, 0, 0, 0)          
+settingsMenu.AnchorPoint = Vector2.new(0.5, 0) -- top-center, so it drops straight down from the bar
+settingsMenu.Position = UDim2.new(0.5, 0, 0.5, 0) -- placeholder; synced to the top bar below
+settingsMenu.Size = UDim2.new(0, SETTINGS_WIDTH, 0, 0) -- full width immediately, opens via height tween below
 settingsMenu.BackgroundColor3 = COLORS.panel
 settingsMenu.BackgroundTransparency = PANEL_TRANSPARENCY
 settingsMenu.ClipsDescendants = true
@@ -378,10 +527,21 @@ settingsMenu.Visible = false
 settingsMenu.ZIndex = 10
 settingsMenu.Parent = screenGui
 
+-- Keeps the (closed-state) panel glued directly under the top bar's current
+-- position, since the bar can be dragged anywhere on screen.
+local function syncSettingsMenuPosition()
+    settingsMenu.Position = UDim2.new(
+        0, topBar.Position.X.Offset + TOPBAR_WIDTH / 2,
+        0, topBar.Position.Y.Offset + TOPBAR_HEIGHT + SETTINGS_GAP
+    )
+end
+syncSettingsMenuPosition()
+
 local settingsMenuCorner = Instance.new("UICorner")
 settingsMenuCorner.CornerRadius = UDim.new(0, 20)
 settingsMenuCorner.Parent = settingsMenu
 
+-- Top row: session time (left) + username (right)
 local stopwatchLabel = Instance.new("TextLabel")
 stopwatchLabel.Name = "SessionStopwatch"
 stopwatchLabel.BackgroundTransparency = 1
@@ -409,6 +569,7 @@ usernameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 usernameLabel.ZIndex = 11
 usernameLabel.Parent = settingsMenu
 
+-- Purple accent divider (echoes the progress-bar look from the concept)
 local divider = Instance.new("Frame")
 divider.Name = "Divider"
 divider.BackgroundColor3 = COLORS.accent
@@ -423,15 +584,16 @@ local dividerCorner = Instance.new("UICorner")
 dividerCorner.CornerRadius = UDim.new(1, 0)
 dividerCorner.Parent = divider
 
+-- Left column: Session Kills + Times Executed
 local sessionKillsLabel = Instance.new("TextLabel")
 sessionKillsLabel.Name = "SessionKills"
 sessionKillsLabel.BackgroundTransparency = 1
 sessionKillsLabel.Position = UDim2.new(0, 20, 0, 62)
-sessionKillsLabel.Size = UDim2.new(0, 240, 0, 26)
+sessionKillsLabel.Size = UDim2.new(0, 210, 0, 24)
 sessionKillsLabel.Font = Enum.Font.Gotham
 sessionKillsLabel.Text = "Session Kills: --"
 sessionKillsLabel.TextColor3 = COLORS.white
-sessionKillsLabel.TextSize = 17
+sessionKillsLabel.TextSize = 15
 sessionKillsLabel.TextXAlignment = Enum.TextXAlignment.Left
 sessionKillsLabel.ZIndex = 11
 sessionKillsLabel.Parent = settingsMenu
@@ -440,35 +602,102 @@ local executionLabel = Instance.new("TextLabel")
 executionLabel.Name = "ExecutionCount"
 executionLabel.BackgroundTransparency = 1
 executionLabel.Position = UDim2.new(0, 20, 0, 92)
-executionLabel.Size = UDim2.new(0, 240, 0, 26)
+executionLabel.Size = UDim2.new(0, 210, 0, 24)
 executionLabel.Font = Enum.Font.Gotham
 executionLabel.Text = "Times Executed: " .. formatNumberWithCommas(executionCount)
 executionLabel.TextColor3 = COLORS.white
-executionLabel.TextSize = 17
+executionLabel.TextSize = 15
 executionLabel.TextXAlignment = Enum.TextXAlignment.Left
 executionLabel.ZIndex = 11
 executionLabel.Parent = settingsMenu
 
+local playerCountLabel = Instance.new("TextLabel")
+playerCountLabel.Name = "PlayerCount"
+playerCountLabel.BackgroundTransparency = 1
+playerCountLabel.Position = UDim2.new(0, 20, 0, 122)
+playerCountLabel.Size = UDim2.new(0, 210, 0, 24)
+playerCountLabel.Font = Enum.Font.Gotham
+playerCountLabel.Text = "Players: --"
+playerCountLabel.TextColor3 = COLORS.white
+playerCountLabel.TextSize = 15
+playerCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+playerCountLabel.ZIndex = 11
+playerCountLabel.Parent = settingsMenu
 
+local nextEmoteLabel = Instance.new("TextLabel")
+nextEmoteLabel.Name = "NextEmote"
+nextEmoteLabel.BackgroundTransparency = 1
+nextEmoteLabel.Position = UDim2.new(0, 20, 0, 152)
+nextEmoteLabel.Size = UDim2.new(0, 210, 0, 24)
+nextEmoteLabel.Font = Enum.Font.Gotham
+nextEmoteLabel.Text = "Next Emote: --"
+nextEmoteLabel.TextColor3 = COLORS.white
+nextEmoteLabel.TextSize = 15
+nextEmoteLabel.TextXAlignment = Enum.TextXAlignment.Left
+nextEmoteLabel.ZIndex = 11
+nextEmoteLabel.Parent = settingsMenu
+
+local emotesOwnedLabel = Instance.new("TextLabel")
+emotesOwnedLabel.Name = "EmotesOwned"
+emotesOwnedLabel.BackgroundTransparency = 1
+emotesOwnedLabel.Position = UDim2.new(0, 20, 0, 182)
+emotesOwnedLabel.Size = UDim2.new(0, 105, 0, 24)
+emotesOwnedLabel.Font = Enum.Font.Gotham
+emotesOwnedLabel.Text = "Emotes: --/--"
+emotesOwnedLabel.TextColor3 = COLORS.white
+emotesOwnedLabel.TextSize = 15
+emotesOwnedLabel.TextXAlignment = Enum.TextXAlignment.Left
+emotesOwnedLabel.ZIndex = 11
+emotesOwnedLabel.Parent = settingsMenu
+
+local emotesDisclaimerLabel = Instance.new("TextLabel")
+emotesDisclaimerLabel.Name = "EmotesDisclaimer"
+emotesDisclaimerLabel.BackgroundTransparency = 1
+emotesDisclaimerLabel.Position = UDim2.new(0, 126, 0, 187)
+emotesDisclaimerLabel.Size = UDim2.new(0, 104, 0, 16)
+emotesDisclaimerLabel.Font = Enum.Font.Gotham
+emotesDisclaimerLabel.Text = "(Excludes Limiteds)"
+emotesDisclaimerLabel.TextColor3 = COLORS.disabledGray
+emotesDisclaimerLabel.TextSize = 10
+emotesDisclaimerLabel.TextXAlignment = Enum.TextXAlignment.Left
+emotesDisclaimerLabel.TextWrapped = true
+emotesDisclaimerLabel.ZIndex = 11
+emotesDisclaimerLabel.Parent = settingsMenu
+
+local lastEmoteLabel = Instance.new("TextLabel")
+lastEmoteLabel.Name = "LastEmote"
+lastEmoteLabel.BackgroundTransparency = 1
+lastEmoteLabel.Position = UDim2.new(0, 20, 0, 212)
+lastEmoteLabel.Size = UDim2.new(0, 210, 0, 24)
+lastEmoteLabel.Font = Enum.Font.Gotham
+lastEmoteLabel.Text = "Last Emote: --"
+lastEmoteLabel.TextColor3 = COLORS.white
+lastEmoteLabel.TextSize = 15
+lastEmoteLabel.TextXAlignment = Enum.TextXAlignment.Left
+lastEmoteLabel.TextTruncate = Enum.TextTruncate.AtEnd
+lastEmoteLabel.ZIndex = 11
+lastEmoteLabel.Parent = settingsMenu
+
+-- Right column: toggle rows (generic builder, reused for every switch)
 local toggles = {}
 
 local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle)
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
-    label.Position = UDim2.new(0, 320, 0, yPos)
-    label.Size = UDim2.new(0, 110, 0, 24)
+    label.Position = UDim2.new(0, 330, 0, yPos)
+    label.Size = UDim2.new(0, 110, 0, 22)
     label.Font = Enum.Font.Gotham
     label.Text = labelText
     label.TextColor3 = COLORS.white
-    label.TextSize = 16
+    label.TextSize = 14
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.ZIndex = 11
     label.Parent = settingsMenu
 
     local toggleFrame = Instance.new("Frame")
     toggleFrame.Name = name .. "Toggle"
-    toggleFrame.Position = UDim2.new(0, 450, 0, yPos - 1)
-    toggleFrame.Size = UDim2.new(0, 48, 0, 24)
+    toggleFrame.Position = UDim2.new(0, 456, 0, yPos - 1)
+    toggleFrame.Size = UDim2.new(0, 44, 0, 22)
     toggleFrame.BackgroundColor3 = enabled[stateKey] and COLORS.toggleOn or COLORS.toggleOff
     toggleFrame.BackgroundTransparency = ELEMENT_TRANSPARENCY
     toggleFrame.ZIndex = 11
@@ -480,8 +709,8 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
 
     local knob = Instance.new("Frame")
     knob.Name = "Knob"
-    knob.Size = UDim2.new(0, 20, 0, 20)
-    knob.Position = enabled[stateKey] and UDim2.new(1, -22, 0, 2) or UDim2.new(0, 2, 0, 2)
+    knob.Size = UDim2.new(0, 18, 0, 18)
+    knob.Position = enabled[stateKey] and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
     knob.BackgroundColor3 = COLORS.white
     knob.BackgroundTransparency = 0.05
     knob.ZIndex = 12
@@ -500,7 +729,10 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
 
     local toggleObj = { Frame = toggleFrame, Knob = knob, Key = stateKey, Locked = locked }
 
-
+    -- Locked toggles (Leaderboard / Session Kills outside the allowed game)
+    -- always render as gray + off, regardless of the underlying `enabled`
+    -- value, and never move when clicked. This is what keeps Session Kills
+    -- visually disabled instead of looking live and tappable.
     local function refreshVisual()
         if toggleObj.Locked then
             toggleFrame.BackgroundColor3 = COLORS.disabledGray
@@ -510,7 +742,7 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
         local on = enabled[stateKey]
         toggleFrame.BackgroundColor3 = on and COLORS.toggleOn or COLORS.toggleOff
         TweenService:Create(knob, TweenInfo.new(0.15), {
-            Position = on and UDim2.new(1, -22, 0, 2) or UDim2.new(0, 2, 0, 2)
+            Position = on and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
         }):Play()
     end
 
@@ -521,6 +753,7 @@ local function createToggleRow(name, yPos, labelText, stateKey, locked, onToggle
         if toggleObj.Locked then return end
         enabled[stateKey] = not enabled[stateKey]
         refreshVisual()
+        persistToggleState(stateKey)
         if onToggle then onToggle() end
     end)
 
@@ -533,18 +766,34 @@ createToggleRow("Fps", 92, "FPS", "fps", false, function() updateFpsDisplay() en
 local lbToggle = createToggleRow("LbStats", 122, "Leaderboard", "lbstats", lbLocked, function() updateLbDisplay() end)
 local sessionKillsToggle = createToggleRow("SessionKills", 152, "Session Kills", "sessionkills", sessionKillsLocked, function() updateSessionKillsDisplay() end)
 local executionToggle = createToggleRow("Execution", 182, "Execution", "execution", false, function() updateExecutionDisplay() end)
+-- locked = false always: unlike Leaderboard/Session Kills, this isn't tied to IS_ALLOWED_GAME
+local playerCountToggle = createToggleRow("PlayerCount", 212, "Players", "playercount", false, function() updatePlayerCountDisplay() end)
+local emotesToggle = createToggleRow("Emotes", 242, "Emotes", "emotes", emoteLocked, function() updateEmoteDisplay() end)
 
 -- Unload button
+local versionLabel = Instance.new("TextLabel")
+versionLabel.Name = "VersionLabel"
+versionLabel.BackgroundTransparency = 1
+versionLabel.Position = UDim2.new(0, 20, 0, 258)
+versionLabel.Size = UDim2.new(0, 120, 0, 16)
+versionLabel.Font = Enum.Font.Gotham
+versionLabel.Text = "Version 2.07"
+versionLabel.TextColor3 = COLORS.disabledGray
+versionLabel.TextSize = 12
+versionLabel.TextXAlignment = Enum.TextXAlignment.Left
+versionLabel.ZIndex = 11
+versionLabel.Parent = settingsMenu
+
 local unloadButton = Instance.new("TextButton")
 unloadButton.Name = "UnloadButton"
 unloadButton.Position = UDim2.new(0, 20, 0, 276)
-unloadButton.Size = UDim2.new(1, -40, 0, 36)
+unloadButton.Size = UDim2.new(1, -40, 0, 34)
 unloadButton.BackgroundColor3 = COLORS.unloadRed
 unloadButton.BackgroundTransparency = ELEMENT_TRANSPARENCY
 unloadButton.Font = Enum.Font.GothamBold
 unloadButton.Text = "UNLOAD SCRIPT"
 unloadButton.TextColor3 = Color3.fromRGB(20, 0, 0)
-unloadButton.TextSize = 18
+unloadButton.TextSize = 16
 unloadButton.ZIndex = 11
 unloadButton.Parent = settingsMenu
 
@@ -562,9 +811,13 @@ local menuSizeTween
 local function setSettingsOpen(open)
     settingsOpen = open
 
+    -- Cancel whatever's still playing before starting the opposite
+    -- animation, otherwise an open/close/open in quick succession leaves two
+    -- tweens fighting over the same Size property.
     if menuSizeTween then menuSizeTween:Cancel() end
 
     if open then
+        syncSettingsMenuPosition() -- re-anchor under the bar in case it was dragged
         settingsMenu.Visible = true
         menuSizeTween = TweenService:Create(settingsMenu, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
             Size = UDim2.new(0, SETTINGS_WIDTH, 0, SETTINGS_HEIGHT)
@@ -572,7 +825,7 @@ local function setSettingsOpen(open)
         menuSizeTween:Play()
     else
         menuSizeTween = TweenService:Create(settingsMenu, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-            Size = UDim2.new(0, 0, 0, 0)
+            Size = UDim2.new(0, SETTINGS_WIDTH, 0, 0)
         })
         menuSizeTween:Play()
         menuSizeTween.Completed:Connect(function()
@@ -734,6 +987,111 @@ end
 updateExecutionDisplay()
 
 -- ============================================================
+-- PLAYERS IN SERVER DISPLAY
+-- ============================================================
+-- Intentionally not gated by IS_ALLOWED_GAME/lbLocked - GetPlayers() works
+-- in any game, so this stays usable everywhere unlike the leaderboard stats.
+
+function updatePlayerCountDisplay()
+    if enabled.playercount then
+        playerCountLabel.Text = "Players: " .. formatNumberWithCommas(getPlayerCount())
+        playerCountLabel.TextColor3 = COLORS.white
+    else
+        playerCountLabel.Text = "Players: Disabled"
+        playerCountLabel.TextColor3 = COLORS.disabledGray
+    end
+
+    if playerCountToggle then
+        playerCountToggle.Refresh()
+    end
+end
+
+updatePlayerCountDisplay()
+
+local playerCountConnections = {
+    Players.PlayerAdded:Connect(updatePlayerCountDisplay),
+    Players.PlayerRemoving:Connect(updatePlayerCountDisplay),
+}
+
+-- ============================================================
+-- EMOTE PROGRESS DISPLAY
+-- ============================================================
+-- Locked outside the allowed game (like Leaderboard/Session Kills) since it
+-- depends on that game's specific Emotes module + TotalKillsFrb/LastEmoteSpin
+-- attributes.
+
+local knownOwnedEmoteIds = {} -- set of ids we've already seen, used to spot newly granted ones
+
+local function snapshotOwnedEmotes()
+    knownOwnedEmoteIds = {}
+    for _, id in ipairs(getOwnedEmoteIds()) do
+        knownOwnedEmoteIds[id] = true
+    end
+end
+
+function updateEmoteDisplay()
+    if emoteLocked then
+        enabled.emotes = false
+    end
+
+    if enabled.emotes then
+        local killsLeft = getKillsUntilNextEmote()
+        nextEmoteLabel.Text = killsLeft <= 0
+            and "Next Emote: Ready!"
+            or ("Next Emote: " .. formatNumberWithCommas(killsLeft) .. " Kills")
+        nextEmoteLabel.TextColor3 = COLORS.white
+
+        local ownedIds = getOwnedEmoteIds()
+        local totalCount = countObtainableEmotes(getAllEmotesTable())
+        emotesOwnedLabel.Text = "Emotes: " .. #ownedIds .. "/" .. (totalCount > 0 and totalCount or "?")
+        emotesOwnedLabel.TextColor3 = COLORS.white
+        emotesDisclaimerLabel.Text = "(Excludes Limiteds)"
+        emotesDisclaimerLabel.TextColor3 = COLORS.disabledGray
+
+        lastEmoteLabel.Text = "Last Emote: " .. (lastEmoteName or "None yet")
+        lastEmoteLabel.TextColor3 = COLORS.white
+    else
+        nextEmoteLabel.Text = "Next Emote: Disabled"
+        emotesOwnedLabel.Text = "Emotes: Disabled"
+        lastEmoteLabel.Text = "Last Emote: Disabled"
+        emotesDisclaimerLabel.Text = ""
+        nextEmoteLabel.TextColor3 = COLORS.disabledGray
+        emotesOwnedLabel.TextColor3 = COLORS.disabledGray
+        lastEmoteLabel.TextColor3 = COLORS.disabledGray
+    end
+
+    if emotesToggle then
+        emotesToggle.Refresh()
+    end
+end
+
+-- Whenever the owned-emotes list grows, diff it against the last known set
+-- to figure out which one was just granted, resolve its display name, and
+-- persist it so "Last Emote" survives across executions.
+local function checkForNewEmote()
+    local ownedIds = getOwnedEmoteIds()
+    for _, id in ipairs(ownedIds) do
+        if not knownOwnedEmoteIds[id] then
+            lastEmoteName = getEmoteDisplayName(id)
+            persistLastEmote(lastEmoteName)
+        end
+    end
+    snapshotOwnedEmotes()
+    updateEmoteDisplay()
+end
+
+local emoteConnections = {}
+
+if not emoteLocked then
+    snapshotOwnedEmotes() -- baseline so existing emotes aren't misread as "new" on load
+    table.insert(emoteConnections, LocalPlayer:GetAttributeChangedSignal("Emotes"):Connect(checkForNewEmote))
+    table.insert(emoteConnections, LocalPlayer:GetAttributeChangedSignal("TotalKillsFrb"):Connect(updateEmoteDisplay))
+    table.insert(emoteConnections, LocalPlayer:GetAttributeChangedSignal("LastEmoteSpin"):Connect(updateEmoteDisplay))
+end
+
+updateEmoteDisplay()
+
+-- ============================================================
 -- SESSION STOPWATCH
 -- ============================================================
 
@@ -800,6 +1158,9 @@ UserInputService.InputChanged:Connect(function(input)
             startPos.X.Scale, startPos.X.Offset + delta.X,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y
         )
+        if settingsOpen then
+            syncSettingsMenuPosition()
+        end
     end
 end)
 
@@ -808,13 +1169,19 @@ end)
 -- ============================================================
 
 unloadButton.MouseButton1Click:Connect(function()
-
+    -- Save the island's current position so the next execution restores it.
     persistPosition(topBar.Position)
     unloaded = true
     if renderConn then
         renderConn:Disconnect()
     end
     for _, conn in ipairs(lbConnections) do
+        conn:Disconnect()
+    end
+    for _, conn in ipairs(playerCountConnections) do
+        conn:Disconnect()
+    end
+    for _, conn in ipairs(emoteConnections) do
         conn:Disconnect()
     end
     screenGui:Destroy()
