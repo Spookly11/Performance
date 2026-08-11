@@ -1086,36 +1086,333 @@ m1HexBoxStroke.Thickness = 1
 m1HexBoxStroke.Color = COLORS.white
 m1HexBoxStroke.Transparency = 0.7
 m1HexBoxStroke.Parent = m1HexBox
-m1HexBox.FocusLost:Connect(function()
-    local parsed = hexToColor3(m1HexBox.Text)
-    if parsed then
-        currentM1Color = parsed
-        persistM1Color(currentM1Color)
-        m1HexBoxStroke.Color = COLORS.white
-        m1HexBoxStroke.Transparency = 0.7
-        if enabled.m1color then
-            refreshActiveVFXColor()
+
+-- Custom VFX color controls.  The text box is only an input field now:
+-- the selected color is not applied until the check button is pressed.
+local m1FavoriteColors = {}
+if type(savedPrefs.m1FavoriteColors) == "table" then
+    for _, hex in ipairs(savedPrefs.m1FavoriteColors) do
+        if type(hex) == "string" and hexToColor3(hex) and #m1FavoriteColors < 5 then
+            table.insert(m1FavoriteColors, string.upper(hex))
         end
+    end
+end
+
+local function persistM1FavoriteColors()
+    savedPrefs.m1FavoriteColors = {}
+    for _, hex in ipairs(m1FavoriteColors) do
+        table.insert(savedPrefs.m1FavoriteColors, hex)
+    end
+    savePrefs(savedPrefs)
+end
+
+local function isM1Favorite(hex)
+    hex = string.upper(hex)
+    for _, favorite in ipairs(m1FavoriteColors) do
+        if string.upper(favorite) == hex then
+            return true
+        end
+    end
+    return false
+end
+
+local function addM1Favorite(hex)
+    hex = string.upper(hex)
+    if isM1Favorite(hex) or #m1FavoriteColors >= 5 then
+        return false
+    end
+    table.insert(m1FavoriteColors, hex)
+    persistM1FavoriteColors()
+    return true
+end
+
+local function removeM1Favorite(hex)
+    hex = string.upper(hex)
+    for i = #m1FavoriteColors, 1, -1 do
+        if string.upper(m1FavoriteColors[i]) == hex then
+            table.remove(m1FavoriteColors, i)
+            persistM1FavoriteColors()
+            return true
+        end
+    end
+    return false
+end
+
+local function makeColorTooltip(parent, text, width)
+    local label = Instance.new("TextLabel")
+    label.Name = "Tooltip"
+    label.AnchorPoint = Vector2.new(0.5, 1)
+    label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    label.BackgroundTransparency = 0.2
+    label.Position = UDim2.new(0.5, 0, 0, -8)
+    label.Size = UDim2.new(0, width, 0, 26)
+    label.Font = Enum.Font.Gotham
+    label.Text = text
+    label.TextColor3 = COLORS.white
+    label.TextSize = 14
+    label.Visible = false
+    label.ZIndex = 20
+    label.Parent = parent
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = label
+    parent.MouseEnter:Connect(function() label.Visible = true end)
+    parent.MouseLeave:Connect(function() label.Visible = false end)
+    return label
+end
+
+local m1ColorActionButtons = {}
+
+local m1FavoriteButton = Instance.new("TextButton")
+m1FavoriteButton.Name = "M1ColorFavoriteButton"
+m1FavoriteButton.Position = UDim2.new(0, 118, 0, 272)
+m1FavoriteButton.Size = UDim2.new(0, 22, 0, 22)
+m1FavoriteButton.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+m1FavoriteButton.AutoButtonColor = false
+m1FavoriteButton.Font = Enum.Font.GothamBold
+m1FavoriteButton.Text = "★"
+m1FavoriteButton.TextColor3 = COLORS.white
+m1FavoriteButton.TextSize = 15
+m1FavoriteButton.ZIndex = 11
+m1FavoriteButton.Visible = false
+m1FavoriteButton.Parent = settingsMenu
+local m1FavoriteButtonCorner = Instance.new("UICorner")
+m1FavoriteButtonCorner.CornerRadius = UDim.new(0, 6)
+m1FavoriteButtonCorner.Parent = m1FavoriteButton
+local m1FavoriteButtonStroke = Instance.new("UIStroke")
+m1FavoriteButtonStroke.Thickness = 1
+m1FavoriteButtonStroke.Color = COLORS.white
+m1FavoriteButtonStroke.Transparency = 0.7
+m1FavoriteButtonStroke.Parent = m1FavoriteButton
+makeColorTooltip(m1FavoriteButton, "Favorite", 80)
+table.insert(m1ColorActionButtons, m1FavoriteButton)
+
+local m1ApplyButton = Instance.new("TextButton")
+m1ApplyButton.Name = "M1ColorApplyButton"
+m1ApplyButton.Position = UDim2.new(0, 146, 0, 272)
+m1ApplyButton.Size = UDim2.new(0, 22, 0, 22)
+m1ApplyButton.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+m1ApplyButton.AutoButtonColor = false
+m1ApplyButton.Font = Enum.Font.GothamBold
+m1ApplyButton.Text = "✓"
+m1ApplyButton.TextColor3 = COLORS.white
+m1ApplyButton.TextSize = 15
+m1ApplyButton.ZIndex = 11
+m1ApplyButton.Visible = false
+m1ApplyButton.Parent = settingsMenu
+local m1ApplyButtonCorner = Instance.new("UICorner")
+m1ApplyButtonCorner.CornerRadius = UDim.new(0, 6)
+m1ApplyButtonCorner.Parent = m1ApplyButton
+local m1ApplyButtonStroke = Instance.new("UIStroke")
+m1ApplyButtonStroke.Thickness = 1
+m1ApplyButtonStroke.Color = COLORS.white
+m1ApplyButtonStroke.Transparency = 0.7
+m1ApplyButtonStroke.Parent = m1ApplyButton
+makeColorTooltip(m1ApplyButton, "Apply Color", 100)
+table.insert(m1ColorActionButtons, m1ApplyButton)
+
+local m1ApplyPulseId = 0
+local m1FavoritePulseId = 0
+local function pulseColorButton(stroke, pulseColor, pulseIdName)
+    if pulseIdName == "apply" then
+        m1ApplyPulseId += 1
+        local thisPulse = m1ApplyPulseId
+        stroke.Color = pulseColor
+        stroke.Transparency = 0
+        task.delay(1, function()
+            if thisPulse == m1ApplyPulseId and stroke.Parent then
+                stroke.Color = COLORS.white
+                stroke.Transparency = 0.7
+            end
+        end)
     else
+        m1FavoritePulseId += 1
+        local thisPulse = m1FavoritePulseId
+        stroke.Color = pulseColor
+        stroke.Transparency = 0
+        task.delay(1, function()
+            if thisPulse == m1FavoritePulseId and stroke.Parent then
+                stroke.Color = COLORS.white
+                stroke.Transparency = 0.7
+            end
+        end)
+    end
+end
+
+local m1FavoritesDropdown = Instance.new("Frame")
+m1FavoritesDropdown.Name = "M1FavoritesDropdown"
+m1FavoritesDropdown.Position = UDim2.new(0, 118, 0, 298)
+m1FavoritesDropdown.Size = UDim2.new(0, 176, 0, 0)
+m1FavoritesDropdown.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+m1FavoritesDropdown.BackgroundTransparency = 0.08
+m1FavoritesDropdown.BorderSizePixel = 0
+m1FavoritesDropdown.ClipsDescendants = true
+m1FavoritesDropdown.Visible = false
+m1FavoritesDropdown.ZIndex = 18
+m1FavoritesDropdown.Parent = settingsMenu
+local m1FavoritesDropdownCorner = Instance.new("UICorner")
+m1FavoritesDropdownCorner.CornerRadius = UDim.new(0, 6)
+m1FavoritesDropdownCorner.Parent = m1FavoritesDropdown
+
+local m1FavoritesDropdownOpen = false
+local m1FavoriteLastClick = 0
+local m1FavoriteLastHex = nil
+
+local function refreshM1FavoritesDropdown()
+    for _, child in ipairs(m1FavoritesDropdown:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+
+    local swatchWidth = 32
+    local swatchGap = 4
+    local rowHeight = 26
+
+    for index, hex in ipairs(m1FavoriteColors) do
+        local color = hexToColor3(hex)
+        local button = Instance.new("TextButton")
+        button.Name = "Favorite" .. index
+        button.Position = UDim2.new(0, 4 + (index - 1) * (swatchWidth + swatchGap), 0, 2)
+        button.Size = UDim2.new(0, swatchWidth, 0, 22)
+        button.BackgroundColor3 = color or Color3.fromRGB(0, 0, 0)
+        button.BackgroundTransparency = 0.05
+        button.BorderSizePixel = 0
+        button.AutoButtonColor = false
+        button.Font = Enum.Font.GothamBold
+        button.Text = ""
+        button.ZIndex = 19
+        button.Parent = m1FavoritesDropdown
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = 1
+        stroke.Color = COLORS.white
+        stroke.Transparency = 0.7
+        stroke.Parent = button
+
+        local clickTime = 0
+        button.MouseButton1Click:Connect(function()
+            local now = os.clock()
+            if clickTime > 0 and now - clickTime <= 0.3 then
+                removeM1Favorite(hex)
+                refreshM1FavoritesDropdown()
+                if #m1FavoriteColors == 0 then
+                    m1FavoritesDropdown.Visible = false
+                    m1FavoritesDropdownOpen = false
+                end
+                clickTime = 0
+                return
+            end
+            clickTime = now
+
+            -- Single click selects/applies a saved favorite.
+            local parsed = hexToColor3(hex)
+            if parsed then
+                currentM1Color = parsed
+                m1HexBox.Text = hex
+                persistM1Color(currentM1Color)
+                if enabled.m1color then
+                    refreshActiveVFXColor()
+                end
+            end
+        end)
+    end
+
+    m1FavoritesDropdown.Size = UDim2.new(
+        0,
+        math.max(40, math.min(#m1FavoriteColors, 5) * (swatchWidth + swatchGap) + 4),
+        0,
+        rowHeight + 4
+    )
+end
+
+local function closeM1FavoritesDropdown()
+    m1FavoritesDropdown.Visible = false
+    m1FavoritesDropdownOpen = false
+end
+
+local function openM1FavoritesDropdown()
+    if #m1FavoriteColors == 0 then return end
+    refreshM1FavoritesDropdown()
+    m1FavoritesDropdown.Visible = true
+    m1FavoritesDropdownOpen = true
+end
+
+m1FavoriteButton.MouseButton1Click:Connect(function()
+    local appliedHex = colorToHex(currentM1Color)
+    if isM1Favorite(appliedHex) then
+        if m1FavoritesDropdownOpen then
+            closeM1FavoritesDropdown()
+        else
+            openM1FavoritesDropdown()
+        end
+    elseif #m1FavoriteColors < 5 then
+        local added = addM1Favorite(appliedHex)
+        if added then
+            m1FavoriteButton.Text = "★"
+            pulseColorButton(m1FavoriteButtonStroke, Color3.fromRGB(255, 220, 0), "favorite")
+        end
+    end
+end)
+
+m1ApplyButton.MouseButton1Click:Connect(function()
+    local parsed = hexToColor3(m1HexBox.Text)
+    if not parsed then
         m1HexBoxStroke.Color = COLORS.unloadRed
         m1HexBoxStroke.Transparency = 0
+        return
     end
+
+    currentM1Color = parsed
+    persistM1Color(currentM1Color)
     m1HexBox.Text = colorToHex(currentM1Color)
+    m1HexBoxStroke.Color = COLORS.white
+    m1HexBoxStroke.Transparency = 0.7
+    pulseColorButton(m1ApplyButtonStroke, Color3.fromRGB(70, 220, 110), "apply")
+
+    if enabled.m1color then
+        refreshActiveVFXColor()
+    end
 end)
+
 m1ExpandButton.MouseButton1Click:Connect(function()
     if m1ColorLocked then return end
     m1SwatchExpanded = not m1SwatchExpanded
     m1HexBox.Visible = m1SwatchExpanded
     m1ExpandButton.Text = m1SwatchExpanded and "<" or ">"
+
+    for _, button in ipairs(m1ColorActionButtons) do
+        button.Visible = m1SwatchExpanded
+    end
+
+    if not m1SwatchExpanded then
+        closeM1FavoritesDropdown()
+    end
 end)
+
 applyM1TrailColor(enabled.m1color)
+local favoriteHintLabel = Instance.new("TextLabel")
+favoriteHintLabel.Name = "FavoriteHint"
+favoriteHintLabel.BackgroundTransparency = 1
+-- Align this hint on the same row as Version 2.15, directly above the right side of the unload button.
+favoriteHintLabel.Position = UDim2.new(0, 280, 0, 332)
+favoriteHintLabel.Size = UDim2.new(0, 240, 0, 16)
+favoriteHintLabel.Font = Enum.Font.Gotham
+favoriteHintLabel.Text = "Double-Click To Remove Favorites."
+favoriteHintLabel.TextColor3 = COLORS.disabledGray
+favoriteHintLabel.TextSize = 12
+favoriteHintLabel.TextXAlignment = Enum.TextXAlignment.Right
+favoriteHintLabel.Visible = IS_ALLOWED_GAME
+favoriteHintLabel.ZIndex = 11
+favoriteHintLabel.Parent = settingsMenu
+
 local versionLabel = Instance.new("TextLabel")
 versionLabel.Name = "VersionLabel"
 versionLabel.BackgroundTransparency = 1
 versionLabel.Position = UDim2.new(0, 20, 0, 332)
 versionLabel.Size = UDim2.new(0, 120, 0, 16)
 versionLabel.Font = Enum.Font.Gotham
-versionLabel.Text = "Version 2.15"
+versionLabel.Text = "Version 2.16"
 versionLabel.TextColor3 = COLORS.disabledGray
 versionLabel.TextSize = 12
 versionLabel.TextXAlignment = Enum.TextXAlignment.Left
