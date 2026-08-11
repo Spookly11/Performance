@@ -45,6 +45,7 @@ local VFXConfig = {
     RecolorLights = true,
     RecolorHighlights = true,
     RecolorDecals = false, -- decals are often actual artwork/textures, opt-in only
+    RecolorMeshes = true, -- solid BasePart/MeshPart color, only for models in VFX_MESH_ALLOWLIST
 }
 -- Some effects are made up mostly/entirely of Decals (ring flashes, etc). Rather
 -- than flipping RecolorDecals on globally (which would also recolor things like
@@ -87,6 +88,26 @@ local function isInDecalAllowlist(obj)
     local ancestor = obj.Parent
     while ancestor do
         if VFX_DECAL_ALLOWLIST[ancestor.Name] then
+            return true
+        end
+        ancestor = ancestor.Parent
+    end
+    return false
+end
+-- Recoloring solid geometry (BasePart/MeshPart.Color) is far riskier than
+-- particles/trails/etc if left unrestricted, since it would also catch
+-- scenery, props, and hitboxes anywhere under the watched roots. So unlike
+-- the rest of the VFX recolor system, mesh recoloring is opt-in by name only.
+local VFX_MESH_ALLOWLIST = {
+    Dragon = true,
+}
+local function isInMeshAllowlist(obj)
+    if VFX_MESH_ALLOWLIST[obj.Name] then
+        return true
+    end
+    local ancestor = obj.Parent
+    while ancestor do
+        if VFX_MESH_ALLOWLIST[ancestor.Name] then
             return true
         end
         ancestor = ancestor.Parent
@@ -243,6 +264,9 @@ local function recolorObject(obj)
         elseif obj:IsA("Decal") and (VFXConfig.RecolorDecals or isInDecalAllowlist(obj)) then
             cacheOriginal(obj, "Color3")
             obj.Color3 = transformColor(cachedOriginalProps[obj].Color3)
+        elseif obj:IsA("BasePart") and VFXConfig.RecolorMeshes and isInMeshAllowlist(obj) then
+            cacheOriginal(obj, "Color")
+            obj.Color = transformColor(cachedOriginalProps[obj].Color)
         end
     end)
     return ok
@@ -913,7 +937,7 @@ versionLabel.BackgroundTransparency = 1
 versionLabel.Position = UDim2.new(0, 20, 0, 332)
 versionLabel.Size = UDim2.new(0, 120, 0, 16)
 versionLabel.Font = Enum.Font.Gotham
-versionLabel.Text = "Version 2.13"
+versionLabel.Text = "Version 2.14"
 versionLabel.TextColor3 = COLORS.disabledGray
 versionLabel.TextSize = 12
 versionLabel.TextXAlignment = Enum.TextXAlignment.Left
