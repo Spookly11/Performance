@@ -206,156 +206,334 @@ end
 local function getPlayerCount()
     return #Players:GetPlayers()
 end
-local cachedOriginalProps = setmetatable({}, { __mode = "k" }) -- weak keys so destroyed VFX instances get GC'd
+local cachedOriginalProps = {}
+local touchedVFXObjects = {}
 local vfxWatchConnections = {}
+local vfxSessionId = 0
 
 local function cacheOriginal(obj, prop)
+    if not obj or not obj.Parent then
+        return
+    end
+
     cachedOriginalProps[obj] = cachedOriginalProps[obj] or {}
+    touchedVFXObjects[obj] = true
+
     if cachedOriginalProps[obj][prop] == nil then
         cachedOriginalProps[obj][prop] = obj[prop]
     end
 end
 
+local function sanitizeColor3(color)
+    if typeof(color) ~= "Color3" then
+        return Color3.new(1, 1, 1)
+    end
+
+    local r = tonumber(color.R) or 1
+    local g = tonumber(color.G) or 1
+    local b = tonumber(color.B) or 1
+
+    -- Protect against NaN and infinities before math.clamp.
+    if r ~= r or r == math.huge or r == -math.huge then r = 1 end
+    if g ~= g or g == math.huge or g == -math.huge then g = 1 end
+    if b ~= b or b == math.huge or b == -math.huge then b = 1 end
+
+    return Color3.new(
+        math.clamp(r, 0, 1),
+        math.clamp(g, 0, 1),
+        math.clamp(b, 0, 1)
+    )
+end
+
+local function safeToHSV(color)
+    local safe = sanitizeColor3(color)
+
+    local ok, h, s, v = pcall(function()
+        return safe:ToHSV()
+    end)
+
+    if not ok then
+        return 0, 0, 1
+    end
+
+    if h ~= h or h == math.huge or h == -math.huge then h = 0 end
+    if s ~= s or s == math.huge or s == -math.huge then s = 0 end
+    if v ~= v or v == math.huge or v == -math.huge then v = 1 end
+
+    return math.clamp(h, 0, 1), math.clamp(s, 0, 1), math.clamp(v, 0, 1)
+end
+
 local function isGrayscale(color)
-    local _, s, _ = color:ToHSV()
+    local _, s, _ = safeToHSV(color)
     return s < VFXConfig.GrayscaleSaturationThreshold
 end
 
 local function transformColor(color)
+    color = sanitizeColor3(color)
+
     if VFXConfig.Mode == "Full" then
-        return VFXConfig.TargetColor
+        return sanitizeColor3(VFXConfig.TargetColor)
     end
+
     if VFXConfig.PreserveGrayscale and isGrayscale(color) then
         return color
     end
-    local targetH, targetS, _ = VFXConfig.TargetColor:ToHSV()
-    local _, _, v = color:ToHSV()
-    return Color3.fromHSV(targetH, targetS, v)
+
+    local targetH, targetS, _ = safeToHSV(VFXConfig.TargetColor)
+    local _, _, v = safeToHSV(color)
+
+    local ok, result = pcall(function()
+        return Color3.fromHSV(
+            math.clamp(targetH, 0, 1),
+            math.clamp(targetS, 0, 1),
+            math.clamp(v, 0, 1)
+        )
+    end)
+
+    if ok and typeof(result) == "Color3" then
+        return result
+    end
+
+    return color
 end
 
 local function transformColorSequence(sequence)
     local newKeypoints = {}
+
     for _, kp in ipairs(sequence.Keypoints) do
-        table.insert(newKeypoints, ColorSequenceKeypoint.new(kp.Time, transformColor(kp.Value)))
+        table.insert(
+            newKeypoints,
+            ColorSequenceKeypoint.new(kp.Time, transformColor(kp.Value))
+        )
     end
+
     return ColorSequence.new(newKeypoints)
 end
 
 local function recolorObject(obj)
+    if not VFXConfig.Enabled or not obj or not obj.Parent then
+        return false
+    end
+
     local ok = pcall(function()
+        if not VFXConfig.Enabled then
+            return
+        end
+
         if obj:IsA("ParticleEmitter") and VFXConfig.RecolorParticles then
             cacheOriginal(obj, "Color")
             obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
-            obj:Clear() -- flush already-alive particles so the new color shows immediately
+            obj:Clear()
+
         elseif obj:IsA("Trail") and VFXConfig.RecolorTrails then
             cacheOriginal(obj, "Color")
             obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
+
         elseif obj:IsA("Beam") and VFXConfig.RecolorBeams then
             cacheOriginal(obj, "Color")
             obj.Color = transformColorSequence(cachedOriginalProps[obj].Color)
-        elseif (obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight")) and VFXConfig.RecolorLights then
+
+        elseif (obj:IsA("PointLight")
+            or obj:IsA("SpotLight")
+            or obj:IsA("SurfaceLight"))
+            and VFXConfig.RecolorLights then
+
             cacheOriginal(obj, "Color")
             obj.Color = transformColor(cachedOriginalProps[obj].Color)
+
         elseif obj:IsA("Highlight") and VFXConfig.RecolorHighlights then
             cacheOriginal(obj, "FillColor")
             cacheOriginal(obj, "OutlineColor")
+
             obj.FillColor = transformColor(cachedOriginalProps[obj].FillColor)
             obj.OutlineColor = transformColor(cachedOriginalProps[obj].OutlineColor)
-        elseif obj:IsA("Decal") and (VFXConfig.RecolorDecals or isInDecalAllowlist(obj)) then
+
+        elseif obj:IsA("Decal")
+            and (VFXConfig.RecolorDecals or isInDecalAllowlist(obj)) then
+
             cacheOriginal(obj, "Color3")
             obj.Color3 = transformColor(cachedOriginalProps[obj].Color3)
-        elseif obj:IsA("BasePart") and VFXConfig.RecolorMeshes and isInMeshAllowlist(obj) then
+
+        elseif obj:IsA("BasePart")
+            and VFXConfig.RecolorMeshes
+            and isInMeshAllowlist(obj) then
+
             cacheOriginal(obj, "Color")
             obj.Color = transformColor(cachedOriginalProps[obj].Color)
         end
     end)
+
     return ok
 end
 
-local function restoreObject(obj)
-    local cache = cachedOriginalProps[obj]
-    if not cache then return end
-    pcall(function()
-        for prop, value in pairs(cache) do
-            obj[prop] = value
+local function restoreAllVFX()
+    for obj in pairs(touchedVFXObjects) do
+        local cache = cachedOriginalProps[obj]
+
+        if cache and obj and obj.Parent then
+            pcall(function()
+                for prop, originalValue in pairs(cache) do
+                    obj[prop] = originalValue
+                end
+
+                if obj:IsA("ParticleEmitter") then
+                    obj:Clear()
+                end
+            end)
         end
-        if obj:IsA("ParticleEmitter") then
-            obj:Clear()
-        end
-    end)
+    end
+
+    table.clear(touchedVFXObjects)
+    table.clear(cachedOriginalProps)
 end
 
-local function scanAndWatch(root)
+local function disconnectVFXWatchers()
+    for _, conn in ipairs(vfxWatchConnections) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+
+    table.clear(vfxWatchConnections)
+end
+
+local function scanAndWatch(root, sessionId)
+    if not VFXConfig.Enabled or sessionId ~= vfxSessionId then
+        return
+    end
+
     for _, obj in ipairs(root:GetDescendants()) do
+        if not VFXConfig.Enabled or sessionId ~= vfxSessionId then
+            return
+        end
+
         recolorObject(obj)
     end
-    table.insert(vfxWatchConnections, root.DescendantAdded:Connect(function(obj)
-        if VFXConfig.Enabled then
-            recolorObject(obj)
+
+    local connection = root.DescendantAdded:Connect(function(obj)
+        if not VFXConfig.Enabled or sessionId ~= vfxSessionId then
+            return
         end
-    end))
+
+        recolorObject(obj)
+    end)
+
+    table.insert(vfxWatchConnections, connection)
 end
 
 local function getVFXWatchRoots()
     local roots = {}
+
+    -- Only watch actual/active VFX locations.
+    -- Do NOT modify ReplicatedStorage.Resources, because those are
+    -- source/template objects that the game may clone later.
     if LocalPlayer.Character then
         table.insert(roots, LocalPlayer.Character)
     end
+
     for _, name in ipairs(VFX_WATCH_ROOT_NAMES) do
         local folder = workspace:FindFirstChild(name)
+
         if folder then
             table.insert(roots, folder)
         end
     end
-    local ok, resources = pcall(function()
-        return game.ReplicatedStorage.Resources
-    end)
-    if ok and resources then
-        table.insert(roots, resources)
-    end
+
     return roots
 end
 
 local function startVFXWatcher()
-    for _, conn in ipairs(vfxWatchConnections) do
-        conn:Disconnect()
+    -- Kill any previous watcher/session first.
+    disconnectVFXWatchers()
+
+    vfxSessionId += 1
+    local thisSession = vfxSessionId
+
+    if not VFXConfig.Enabled then
+        return
     end
-    vfxWatchConnections = {}
+
+    -- Every enable gets a completely fresh snapshot.
+    table.clear(touchedVFXObjects)
+    table.clear(cachedOriginalProps)
+
     for _, root in ipairs(getVFXWatchRoots()) do
-        scanAndWatch(root)
+        if not VFXConfig.Enabled or thisSession ~= vfxSessionId then
+            return
+        end
+
+        scanAndWatch(root, thisSession)
     end
 end
 
-local function stopVFXWatcher(restoreAll)
-    for _, conn in ipairs(vfxWatchConnections) do
-        conn:Disconnect()
+local function stopVFXWatcher()
+    -- Invalidate old callbacks before doing anything else.
+    vfxSessionId += 1
+
+    -- Disable first so no callback can recolor during restoration.
+    VFXConfig.Enabled = false
+
+    disconnectVFXWatchers()
+    restoreAllVFX()
+end
+
+local function refreshActiveVFXColor()
+    if not VFXConfig.Enabled then
+        return
     end
-    vfxWatchConnections = {}
-    if restoreAll then
-        for obj in pairs(cachedOriginalProps) do
-            if obj and obj.Parent then
-                restoreObject(obj)
+
+    VFXConfig.TargetColor = currentM1Color
+
+    -- Reapply the selected color using each object's original snapshot.
+    for obj in pairs(touchedVFXObjects) do
+        if obj and obj.Parent then
+            recolorObject(obj)
+        end
+    end
+
+    -- Also catch active VFX that appeared since the last scan.
+    for _, root in ipairs(getVFXWatchRoots()) do
+        if not VFXConfig.Enabled then
+            return
+        end
+
+        for _, obj in ipairs(root:GetDescendants()) do
+            if not VFXConfig.Enabled then
+                return
             end
+
+            recolorObject(obj)
         end
     end
 end
 
 local function applyM1TrailColor(useCustom)
-    VFXConfig.Enabled = useCustom
-    VFXConfig.TargetColor = currentM1Color
     if useCustom then
+        VFXConfig.TargetColor = currentM1Color
+        VFXConfig.Enabled = true
         startVFXWatcher()
     else
-        stopVFXWatcher(true)
+        stopVFXWatcher()
     end
 end
 
 LocalPlayer.CharacterAdded:Connect(function()
-    if VFXConfig.Enabled then
-        task.wait(0.5) -- let the character's VFX instances populate first
-        startVFXWatcher()
+    if not VFXConfig.Enabled then
+        return
     end
+
+    local sessionAtSpawn = vfxSessionId
+
+    task.wait(0.5)
+
+    -- The toggle/session may have changed while the character loaded.
+    if not VFXConfig.Enabled or sessionAtSpawn ~= vfxSessionId then
+        return
+    end
+
+    startVFXWatcher()
 end)
+
 local cachedEmotesTable = nil 
 local function getAllEmotesTable()
     if cachedEmotesTable then return cachedEmotesTable end
@@ -916,7 +1094,7 @@ m1HexBox.FocusLost:Connect(function()
         m1HexBoxStroke.Color = COLORS.white
         m1HexBoxStroke.Transparency = 0.7
         if enabled.m1color then
-            applyM1TrailColor(true)
+            refreshActiveVFXColor()
         end
     else
         m1HexBoxStroke.Color = COLORS.unloadRed
@@ -1240,9 +1418,9 @@ local function cleanupScript()
         end
     end)
 
-    -- Restore original VFX colors and stop the watcher.
+    -- Completely disable and restore all VFX modifications.
     pcall(function()
-        applyM1TrailColor(false)
+        stopVFXWatcher()
     end)
 
     if renderConn then
