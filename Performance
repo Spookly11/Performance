@@ -1,10 +1,6 @@
--- Ping/FPS UI bootstrap
--- Fixed: safely initializes on the client before touching LocalPlayer/PlayerGui.
 local GLOBAL_ENV = (getgenv and getgenv()) or _G
-
 if GLOBAL_ENV.__PingFpsUI_AutoCleanup then
     pcall(GLOBAL_ENV.__PingFpsUI_AutoCleanup)
-    GLOBAL_ENV.__PingFpsUI_AutoCleanup = nil
 end
 
 local sessionStartTime = os.clock()
@@ -14,23 +10,8 @@ local TweenService = game:GetService("TweenService")
 local Stats = game:GetService("Stats")
 local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
-
--- Give the client a moment to finish initializing when the script is
--- executed immediately after joining/rejoining a server.
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
-
 local LocalPlayer = Players.LocalPlayer
-if not LocalPlayer then
-    LocalPlayer = Players.PlayerAdded:Wait()
-end
-
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 15)
-if not PlayerGui then
-    warn("[PingFpsUI] PlayerGui was not available; script stopped.")
-    return
-end
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local ALLOWED_PLACE_ID = 10449761463
 local IS_ALLOWED_GAME = (game.PlaceId == ALLOWED_PLACE_ID)
 local COLORS = {
@@ -200,52 +181,12 @@ local function getFpsColor(fps)
     end
 end
 local function getPing()
-    -- Primary method: the value normally shown by Roblox's performance stats.
     local ok, result = pcall(function()
-        local networkStats = Stats:FindFirstChild("Network")
-        if not networkStats then
-            return nil
-        end
-
-        local serverStats = networkStats:FindFirstChild("ServerStatsItem")
-        if not serverStats then
-            return nil
-        end
-
-        local pingItem = serverStats:FindFirstChild("Data Ping")
-        if not pingItem then
-            return nil
-        end
-
-        local value = pingItem:GetValue()
-        if type(value) ~= "number" then
-            return nil
-        end
-
-        return math.max(0, math.floor(value + 0.5))
+        local networkStats = Stats.Network
+        local pingItem = networkStats.ServerStatsItem["Data Ping"]
+        return math.floor(pingItem:GetValue())
     end)
-
-    if ok and result ~= nil then
-        return result
-    end
-
-    -- Fallback for executors/clients exposing GetNetworkPing().
-    local fallbackOk, fallback = pcall(function()
-        if LocalPlayer.GetNetworkPing then
-            local character = LocalPlayer.Character
-            local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
-            if humanoidRootPart then
-                -- GetNetworkPing() is seconds; convert to milliseconds.
-                return math.max(0, math.floor(LocalPlayer:GetNetworkPing() * 1000 + 0.5))
-            end
-        end
-        return nil
-    end)
-
-    if fallbackOk and fallback ~= nil then
-        return fallback
-    end
-
+    if ok then return result end
     return 0
 end
 local function getFps()
@@ -734,19 +675,10 @@ local function persistLastEmote(name)
     savePrefs(savedPrefs)
 end
 local updatePingDisplay, updateFpsDisplay, updateLbDisplay, updateSessionKillsDisplay, updateExecutionDisplay, updatePlayerCountDisplay, updateEmoteDisplay
--- Reuse/destroy any orphaned GUI with the same name.
-pcall(function()
-    local oldGui = PlayerGui:FindFirstChild("PingFpsUI")
-    if oldGui then
-        oldGui:Destroy()
-    end
-end)
-
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "PingFpsUI"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = PlayerGui
 local TOPBAR_WIDTH, TOPBAR_HEIGHT = 600, 56
 local topBar = Instance.new("Frame")
@@ -1825,10 +1757,6 @@ local function cleanupScript()
 
     if screenGui and screenGui.Parent then
         screenGui:Destroy()
-    end
-
-    if GLOBAL_ENV.__PingFpsUI_AutoCleanup == cleanupScript then
-        GLOBAL_ENV.__PingFpsUI_AutoCleanup = nil
     end
 end
 
