@@ -1092,7 +1092,7 @@ m1HexBoxStroke.Parent = m1HexBox
 local m1FavoriteColors = {}
 if type(savedPrefs.m1FavoriteColors) == "table" then
     for _, hex in ipairs(savedPrefs.m1FavoriteColors) do
-        if type(hex) == "string" and hexToColor3(hex) and #m1FavoriteColors < 5 then
+        if type(hex) == "string" and hexToColor3(hex) and #m1FavoriteColors < 6 then
             table.insert(m1FavoriteColors, string.upper(hex))
         end
     end
@@ -1118,7 +1118,7 @@ end
 
 local function addM1Favorite(hex)
     hex = string.upper(hex)
-    if isM1Favorite(hex) or #m1FavoriteColors >= 5 then
+    if isM1Favorite(hex) or #m1FavoriteColors >= 6 then
         return false
     end
     table.insert(m1FavoriteColors, hex)
@@ -1320,7 +1320,7 @@ local function refreshM1FavoritesDropdown()
 
     m1FavoritesDropdown.Size = UDim2.new(
         0,
-        math.max(40, math.min(#m1FavoriteColors, 5) * (swatchWidth + swatchGap) + 4),
+        math.max(40, math.min(#m1FavoriteColors, 6) * (swatchWidth + swatchGap) + 4),
         0,
         rowHeight + 4
     )
@@ -1346,7 +1346,7 @@ m1FavoriteButton.MouseButton1Click:Connect(function()
         else
             openM1FavoritesDropdown()
         end
-    elseif #m1FavoriteColors < 5 then
+    elseif #m1FavoriteColors < 6 then
         local added = addM1Favorite(appliedHex)
         if added then
             m1FavoriteButton.Text = "★"
@@ -1395,12 +1395,12 @@ local favoriteHintLabel = Instance.new("TextLabel")
 favoriteHintLabel.Name = "FavoriteHint"
 favoriteHintLabel.BackgroundTransparency = 1
 -- Align this hint on the same row as Version 2.15, directly above the right side of the unload button.
-favoriteHintLabel.Position = UDim2.new(0, 280, 0, 332)
-favoriteHintLabel.Size = UDim2.new(0, 240, 0, 16)
+favoriteHintLabel.Position = UDim2.new(0, 260, 0, 332)
+favoriteHintLabel.Size = UDim2.new(0, 260, 0, 16)
 favoriteHintLabel.Font = Enum.Font.Gotham
-favoriteHintLabel.Text = "Double-Click To Remove Favorites."
+favoriteHintLabel.Text = "Double-Click To Remove Favorites. Maximum Of Six."
 favoriteHintLabel.TextColor3 = COLORS.disabledGray
-favoriteHintLabel.TextSize = 12
+favoriteHintLabel.TextSize = 11
 favoriteHintLabel.TextXAlignment = Enum.TextXAlignment.Right
 favoriteHintLabel.Visible = IS_ALLOWED_GAME
 favoriteHintLabel.ZIndex = 11
@@ -1412,7 +1412,7 @@ versionLabel.BackgroundTransparency = 1
 versionLabel.Position = UDim2.new(0, 20, 0, 332)
 versionLabel.Size = UDim2.new(0, 120, 0, 16)
 versionLabel.Font = Enum.Font.Gotham
-versionLabel.Text = "Version 2.16"
+versionLabel.Text = "Version 2.17"
 versionLabel.TextColor3 = COLORS.disabledGray
 versionLabel.TextSize = 12
 versionLabel.TextXAlignment = Enum.TextXAlignment.Left
