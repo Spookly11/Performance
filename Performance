@@ -1394,7 +1394,6 @@ applyM1TrailColor(enabled.m1color)
 local favoriteHintLabel = Instance.new("TextLabel")
 favoriteHintLabel.Name = "FavoriteHint"
 favoriteHintLabel.BackgroundTransparency = 1
--- Align this hint on the same row as Version 2.15, directly above the right side of the unload button.
 favoriteHintLabel.Position = UDim2.new(0, 260, 0, 332)
 favoriteHintLabel.Size = UDim2.new(0, 260, 0, 16)
 favoriteHintLabel.Font = Enum.Font.Gotham
@@ -1412,7 +1411,7 @@ versionLabel.BackgroundTransparency = 1
 versionLabel.Position = UDim2.new(0, 20, 0, 332)
 versionLabel.Size = UDim2.new(0, 120, 0, 16)
 versionLabel.Font = Enum.Font.Gotham
-versionLabel.Text = "Version 2.17"
+versionLabel.Text = "Version 2.18"
 versionLabel.TextColor3 = COLORS.disabledGray
 versionLabel.TextSize = 12
 versionLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -1601,14 +1600,19 @@ function updateEmoteDisplay()
         enabled.emotes = false
     end
     if enabled.emotes then
-        local killsLeft = getKillsUntilNextEmote()
-        nextEmoteLabel.Text = killsLeft <= 0
-            and "Next Emote: Ready!"
-            or ("Next Emote: " .. formatNumberWithCommas(killsLeft) .. " Kills")
-        nextEmoteLabel.TextColor3 = COLORS.white
         local ownedIds = getOwnedEmoteIds()
         local totalCount = countObtainableEmotes(getAllEmotesTable())
-        emotesOwnedLabel.Text = "Emotes: " .. #ownedIds .. "/" .. (totalCount > 0 and totalCount or "?")
+        local ownsAll = totalCount > 0 and #ownedIds >= totalCount
+        if ownsAll then
+            nextEmoteLabel.Text = "You own all emotes."
+        else
+            local killsLeft = getKillsUntilNextEmote()
+            nextEmoteLabel.Text = killsLeft <= 0
+                and "Next Emote: Ready!"
+                or ("Next Emote: " .. formatNumberWithCommas(killsLeft) .. " Kills")
+        end
+        nextEmoteLabel.TextColor3 = COLORS.white
+        emotesOwnedLabel.Text = "Emotes: " .. #ownedIds .. "/" .. (totalCount > 0 and tostring(totalCount) or "?")
         emotesOwnedLabel.TextColor3 = COLORS.white
         emotesDisclaimerLabel.Text = "(Excludes Limiteds)"
         emotesDisclaimerLabel.TextColor3 = COLORS.disabledGray
