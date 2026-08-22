@@ -147,10 +147,11 @@ LIMITED_EMOTE_NAMES = {
     ["Speedster"]          = true,
 }
 unloaded = false
-antiAfkConnection = nil
+antiAfkConnection = nil      -- holds the fallback thread (task.spawn handle); NOT an RBXScriptConnection
 antiAfkIdleConnection = nil
 antiAfkVirtualUser = nil
 antiAfkLastAction = 0
+antiAfkRunning = false       -- explicit cancellation flag for the fallback loop
 
 -- More reliable Anti-AFK:
 -- 1) Listen for Roblox's client-side Player.Idled event.
@@ -163,33 +164,33 @@ antiAfkLastAction = 0
 function antiAFKPulse()
     if not enabled.antiafk or unloaded then return end
 
-    pcall(function()
+    -- CaptureController + a brief Button2 press is the standard lightweight
+    -- anti-AFK input. We only update the "last action" timestamp when the
+    -- input actually succeeds, so the fallback loop isn't fooled by errors.
+    local camera = workspace.CurrentCamera
+    if not camera then return end  -- no camera = can't form a valid CFrame; skip
+
+    local ok = pcall(function()
         if not antiAfkVirtualUser then
             antiAfkVirtualUser = game:GetService("VirtualUser")
         end
 
         antiAfkVirtualUser:CaptureController()
 
-        local camera = workspace.CurrentCamera
         local position = Vector2.new(0, 0)
-
-        if camera then
-            antiAfkVirtualUser:Button2Down(position, camera.CFrame)
-            task.wait(0.15)
-            antiAfkVirtualUser:Button2Up(position, camera.CFrame)
-        else
-            antiAfkVirtualUser:ClickButton2(position)
-        end
+        antiAfkVirtualUser:Button2Down(position, camera.CFrame)
+        task.wait(0.15)
+        antiAfkVirtualUser:Button2Up(position, camera.CFrame)
     end)
 
-    antiAfkLastAction = os.clock()
+    if ok then
+        antiAfkLastAction = os.clock()
+    end
 end
 
 function startAntiAFK()
-    if antiAfkConnection then
-        pcall(function() antiAfkConnection:Disconnect() end)
-        antiAfkConnection = nil
-    end
+    -- Cancel any previously running fallback loop before starting a new one.
+    antiAfkRunning = false
 
     if antiAfkIdleConnection then
         pcall(function() antiAfkIdleConnection:Disconnect() end)
@@ -205,14 +206,15 @@ function startAntiAFK()
         antiAFKPulse()
     end)
 
-    -- Fallback: check once per minute. This is intentionally very light and
-    -- avoids a Heartbeat callback running every frame just for Anti-AFK.
+    -- Fallback: check once per minute. Uses antiAfkRunning (not enabled.antiafk)
+    -- as the loop condition so stopAntiAFK can kill it instantly even if the
+    -- toggle flag hasn't been cleared yet (e.g. during cleanupScript).
+    antiAfkRunning = true
     antiAfkConnection = task.spawn(function()
-        while enabled.antiafk and not unloaded do
+        while antiAfkRunning and not unloaded do
             task.wait(60)
-
-            if enabled.antiafk and not unloaded then
-                -- Don't spam input if the user has interacted recently.
+            if antiAfkRunning and not unloaded then
+                -- Don't fire if the user (or the Idled handler) acted recently.
                 if os.clock() - antiAfkLastAction >= 55 then
                     antiAFKPulse()
                 end
@@ -222,13 +224,17 @@ function startAntiAFK()
 end
 
 function stopAntiAFK()
+    -- Kill the fallback loop. Setting antiAfkRunning = false is the only
+    -- reliable way to stop it; the thread handle in antiAfkConnection cannot
+    -- be Disconnect()ed (it's not an RBXScriptConnection).
+    antiAfkRunning = false
+    antiAfkConnection = nil
+
     if antiAfkIdleConnection then
         pcall(function() antiAfkIdleConnection:Disconnect() end)
         antiAfkIdleConnection = nil
     end
 
-    -- The periodic worker exits on its own after the toggle is disabled.
-    antiAfkConnection = nil
     antiAfkVirtualUser = nil
 end
 
@@ -415,8 +421,49 @@ function transformColorSequence(sequence)
     return ColorSequence.new(newKeypoints)
 end
 
+-- Returns true if `obj` is a descendant of the local player's character,
+-- OR a descendant of workspace.Live / workspace.Thrown but NOT parented
+-- under any other player's character model.
+-- This ensures the VFX color toggle only affects effects the local player
+-- produced, not effects belonging to other players.
+function isOwnedByLocalPlayer(obj)
+    local ancestor = obj
+    while ancestor do
+        -- Directly inside the local character → always ours.
+        if ancestor == LocalPlayer.Character then
+            return true
+        end
+        -- Inside a workspace VFX folder: reject if we find another
+        -- player's character somewhere in the ancestry first.
+        local parent = ancestor.Parent
+        if parent == workspace then
+            -- We've reached the top-level workspace child (e.g. "Live").
+            -- The object is not under any character, so treat it as ours
+            -- (projectiles/thrown effects created by the local player have
+            -- no reliable owner tag, but effects under other characters
+            -- would have been caught in the character check above).
+            return true
+        end
+        -- If the parent is another player's character, it's not ours.
+        if parent then
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character == parent then
+                    return false
+                end
+            end
+        end
+        ancestor = parent
+    end
+    return false
+end
+
 function recolorObject(obj)
     if not VFXConfig.Enabled or not obj or not obj.Parent then
+        return false
+    end
+
+    -- Skip effects that belong to other players.
+    if not isOwnedByLocalPlayer(obj) then
         return false
     end
 
@@ -1096,7 +1143,7 @@ versionLabel.BackgroundTransparency = 1
 versionLabel.Position = UDim2.new(1, -100, 1, -28)
 versionLabel.Size = UDim2.new(0, 80, 0, 16)
 versionLabel.Font = Enum.Font.Gotham
-versionLabel.Text = "Version 3.06"
+versionLabel.Text = "Version 3.08"
 versionLabel.TextColor3 = COLORS.disabledGray
 versionLabel.TextSize = 12
 versionLabel.TextXAlignment = Enum.TextXAlignment.Right
